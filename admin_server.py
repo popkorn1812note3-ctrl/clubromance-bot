@@ -406,15 +406,62 @@ async def story_page(sid: str, _: str = Depends(auth)):
         for bg in sorted(locs)
     )
 
+    # Карта переходов: откуда и по какому выбору попадают в сцену. Нужно, чтобы
+    # вариации («с кем сцена» — Леонард / Дэмиан / София) были различимы и было
+    # видно их место в сюжете (за одно прохождение игрок видит лишь одну ветку).
+    egroups = story.data.get("ending_groups", {})
+    incoming: dict[str, list[str]] = {}
+    ending_of: dict[str, str] = {}
+
+    def _edge(target, label):
+        if target:
+            incoming.setdefault(target, []).append(label)
+
+    for _sc in scenes.values():
+        for ch in _sc.get("choices", []):
+            txt = (ch.get("text") or "").strip()
+            _edge(ch.get("goto"), f"«{txt[:32]}»" if txt else "выбор")
+        nxt = _sc.get("next")
+        if isinstance(nxt, str):
+            _edge(nxt, "далее →")
+        elif isinstance(nxt, list):
+            for o in nxt:
+                _edge(o.get("goto"), "далее (по условию)")
+        rg = _sc.get("route_group")
+        if rg:
+            for o in egroups.get(rg, []):
+                _edge(o.get("goto"), f"финал «{o.get('title') or o.get('code')}»")
+    for _opts in egroups.values():
+        for o in _opts:
+            if o.get("goto"):
+                ending_of[o["goto"]] = o.get("title") or o.get("code") or "финал"
+
     sc_html = ""
     for scid, sc in scenes.items():
         if sc.get("chapter"):
             sc_html += f"<div class=chap>{esc(sc['chapter'])}</div>"
         first = next((b.get("text") for b in sc.get("blocks", []) if b.get("text")), "")
         key = f"scene:{sid}:{scid}"
+        # Кто говорит в сцене (кроме героини) — сразу видно, «с кем» вариация.
+        speakers: list[str] = []
+        for b in sc.get("blocks", []):
+            sp = b.get("speaker")
+            if sp and sp != "Героиня" and sp not in speakers:
+                speakers.append(sp)
+        sp_html = " ".join(f"<span class=tag>🗣 {esc(s)}</span>" for s in speakers)
+        end_html = f"<span class='pill warn'>🏁 финал «{esc(ending_of[scid])}»</span>" if scid in ending_of else ""
+        meta_line = (f"<div style='margin:5px 0 3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center'>"
+                     f"{sp_html}{end_html}</div>") if (sp_html or end_html) else ""
+        src = incoming.get(scid, [])
+        from_html = ""
+        if src:
+            shown = " · ".join(esc(x) for x in src[:3])
+            more = f" +{len(src) - 3}" if len(src) > 3 else ""
+            from_html = f"<div class=muted>◀ ведёт сюда: {shown}{more}</div>"
         sc_html += (
             f"<div class=card><div class=scene><div class=meta>"
             f"<div class=ttl>{esc(sc.get('title') or scid)} <span class=tag>{esc(scid)}</span></div>"
+            f"{meta_line}{from_html}"
             f"<div class=pv>{esc(first[:96])}</div></div>"
             f"<span class=muted>фон: {esc(sc.get('bg') or '—')}</span></div>"
             f"{uploader(key, key in keys)}</div>"
@@ -432,6 +479,14 @@ async def story_page(sid: str, _: str = Depends(auth)):
         f"<div class=grid>{loc_html}</div></section>"
         "<section><div class=sec-head><h2>Картинки к сценам</h2>"
         "<span class=hint>override поверх фона — для важных моментов</span></div>"
+        "<div class=card style='margin-bottom:14px'><div class=muted>"
+        "🔀 <b style='color:var(--text)'>Про вариации.</b> Сюжет местами ветвится — героиня "
+        "общается с Леонардом, Дэмианом или Софией в зависимости от выборов игрока. Под "
+        "заголовком сцены видно, <b style='color:var(--text)'>кто в ней</b> (🗣) и "
+        "<b style='color:var(--text)'>откуда в неё попадают</b> (◀). Это нормально, что у "
+        "одного момента несколько вариантов: игрок за прохождение видит только свою ветку, "
+        "и картинку, прикреплённую к сцене, увидит только он."
+        "</div></div>"
         f"{sc_html}</section>"
     )
     return page(f"{story.title} — картинки", body)

@@ -42,11 +42,12 @@ async def dispatch(ctx: Context, update: dict[str, Any]) -> None:
         log.exception("ошибка обработки апдейта %s", update.get("update_type"))
 
 
-async def _gate_block(ctx: Context, uid: int) -> bool:
-    """True, если юзера нужно держать на гейте подписки (не админ и не прошёл)."""
+async def _gate_block(ctx: Context, uid: int, *, force: bool = False) -> bool:
+    """True, если юзера нужно держать на гейте подписки (не админ и не прошёл).
+    force=True (вход/старт) — проверяем подписку по API, игнорируя кеш."""
     if uid in ctx.admin_ids:
         return False
-    return not await gate.passed(ctx, uid)
+    return not await gate.passed(ctx, uid, force=force)
 
 
 async def _on_bot_added(ctx: Context, update: dict[str, Any]) -> None:
@@ -76,7 +77,7 @@ async def _dispatch(ctx: Context, update: dict[str, Any]) -> None:
         log.info("bot_started uid=%s payload=%s", uid, update.get("payload"))
         await ctx.db.ensure_user(uid, _full_name(user), user.get("username") or "")
         await _handle_referral(ctx, uid, update.get("payload"))
-        if await _gate_block(ctx, uid):
+        if await _gate_block(ctx, uid, force=True):  # вход в бота — всегда реальная проверка ОП
             await menus.show_gate(ctx, uid, force_new=True)
             return
         await menus.show_welcome(ctx, uid)
@@ -91,7 +92,8 @@ async def _dispatch(ctx: Context, update: dict[str, Any]) -> None:
         await ctx.db.ensure_user(uid, _full_name(sender), sender.get("username") or "")
         text = ((msg.get("body", {}) or {}).get("text") or "").strip()
         log.info("message uid=%s text=%r", uid, text[:40])
-        if await _gate_block(ctx, uid):
+        # /start — явный перезаход: проверяем ОП по API, не доверяя кешу.
+        if await _gate_block(ctx, uid, force=text.lower().startswith("/start")):
             await menus.show_gate(ctx, uid, force_new=True)
             return
         await _on_text(ctx, uid, text)

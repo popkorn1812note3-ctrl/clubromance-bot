@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS users (
     referred_by    INTEGER,
     pending        TEXT,
     gate_passed    INTEGER NOT NULL DEFAULT 0,
+    gate_checked_at INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL
 );
 
@@ -130,6 +131,8 @@ class DB:
             await self._conn.execute("ALTER TABLE users ADD COLUMN pending TEXT")
         if "gate_passed" not in cols:
             await self._conn.execute("ALTER TABLE users ADD COLUMN gate_passed INTEGER NOT NULL DEFAULT 0")
+        if "gate_checked_at" not in cols:
+            await self._conn.execute("ALTER TABLE users ADD COLUMN gate_checked_at INTEGER NOT NULL DEFAULT 0")
 
     async def close(self) -> None:
         if self._conn:
@@ -342,7 +345,10 @@ class DB:
         return [dict(r) for r in await cur.fetchall()]
 
     async def set_gate_passed(self, user_id: int, value: int = 1) -> None:
-        await self.conn.execute("UPDATE users SET gate_passed=? WHERE user_id=?", (value, user_id))
+        """Зафиксировать результат проверки ОП + момент проверки (для TTL-кеша)."""
+        await self.conn.execute(
+            "UPDATE users SET gate_passed=?, gate_checked_at=? WHERE user_id=?", (value, _now(), user_id)
+        )
         await self.conn.commit()
 
     async def gate_stats(self) -> dict[str, int]:
