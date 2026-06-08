@@ -195,6 +195,86 @@ class DB:
         await self.add_crystals(user_id, -abs(amount), type_, meta)
         return True
 
+    async def adjust_crystals(self, user_id: int, delta: int, meta: str = "admin") -> int:
+        """Админская правка баланса на ±delta (не опуская ниже нуля). Пишет в журнал.
+        Возвращает новый баланс."""
+        u = await self.get_user(user_id)
+        if not u:
+            return 0
+        delta = max(int(delta), -int(u["crystals"]))  # в минус не уходим
+        if delta == 0:
+            return int(u["crystals"])
+        return await self.add_crystals(user_id, delta, "grant" if delta > 0 else "spend", meta)
+
+    async def set_crystals(self, user_id: int, value: int, meta: str = "admin:set") -> int:
+        """Установить точный баланс (через журнал — разницей). Возвращает новый баланс."""
+        u = await self.get_user(user_id)
+        if not u:
+            return 0
+        delta = max(0, int(value)) - int(u["crystals"])
+        if delta == 0:
+            return int(u["crystals"])
+        return await self.add_crystals(user_id, delta, "grant" if delta > 0 else "spend", meta)
+
+    # ── Управление пользователями (админка) ───────────────────
+    @staticmethod
+    def _user_filter(query: str) -> tuple[str, list[Any]]:
+        """WHERE-хвост для поиска: числовой запрос — по user_id, иначе LIKE по имени/юзернейму."""
+        q = (query or "").strip().lstrip("@")
+        if not q:
+            return "", []
+        if q.lstrip("-").isdigit():
+            return " WHERE user_id=?", [int(q)]
+        like = f"%{q}%"
+        return " WHERE name LIKE ? OR username LIKE ?", [like, like]
+
+    async def list_users(self, query: str = "", limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        where, args = self._user_filter(query)
+        cur = await self.conn.execute(
+            f"SELECT * FROM users{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*args, limit, max(0, offset)),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def count_users(self, query: str = "") -> int:
+        where, args = self._user_filter(query)
+        cur = await self.conn.execute(f"SELECT COUNT(*) FROM users{where}", args)
+        row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
+    async def list_progress(self, user_id: int) -> list[dict[str, Any]]:
+        cur = await self.conn.execute(
+            "SELECT * FROM progress WHERE user_id=? ORDER BY updated_at DESC", (user_id,)
+        )
+        out: list[dict[str, Any]] = []
+        for r in await cur.fetchall():
+            d = dict(r)
+            d["vars"] = json.loads(d.pop("vars_json") or "{}")
+            out.append(d)
+        return out
+
+    async def list_completions(self, user_id: int) -> list[dict[str, Any]]:
+        cur = await self.conn.execute(
+            "SELECT * FROM completions WHERE user_id=? ORDER BY completed_at DESC", (user_id,)
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def reset_user_game(self, user_id: int) -> None:
+        """Сбросить игровой прогресс (истории, завершения, достижения, разблокировки).
+        Профиль и баланс не трогаем."""
+        for tbl in ("progress", "completions", "achievements", "unlocks"):
+            await self.conn.execute(f"DELETE FROM {tbl} WHERE user_id=?", (user_id,))
+        await self.conn.commit()
+
+    async def delete_user(self, user_id: int) -> None:
+        """Полное удаление пользователя и всех связанных записей."""
+        for tbl in ("users", "unlocks", "progress", "completions", "achievements", "ledger"):
+            await self.conn.execute(f"DELETE FROM {tbl} WHERE user_id=?", (user_id,))
+        await self.conn.execute(
+            "DELETE FROM referrals WHERE inviter_id=? OR invited_id=?", (user_id, user_id)
+        )
+        await self.conn.commit()
+
     # ── Награды ───────────────────────────────────────────────
     async def claim_daily(self, user_id: int, reward: int) -> tuple[bool, int, int]:
         """(успех, баланс, секунд_до_следующей). Если рано — успех=False."""

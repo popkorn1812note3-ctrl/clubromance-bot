@@ -11,7 +11,9 @@ import html
 import logging
 import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -65,6 +67,16 @@ def ctx() -> Context:
 
 def esc(s) -> str:
     return html.escape(str(s if s is not None else ""))
+
+
+PAGE = 50  # пользователей на страницу списка
+
+
+def fmt_ts(ts, empty: str = "—") -> str:
+    ts = int(ts or 0)
+    if not ts:
+        return empty
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
 
 
 # ── Дизайн-система ───────────────────────────────────────────
@@ -178,6 +190,27 @@ input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,9
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:6px}
 ::-webkit-scrollbar-track{background:transparent}
 @media(max-width:560px){.hero h1{font-size:23px}.bar{padding:10px 15px}.nav .navlink{padding:7px 11px}}
+.list{display:flex;flex-direction:column;gap:10px}
+.urow{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.urow:hover{transform:translateY(-3px);box-shadow:var(--shl);border-color:var(--border2)}
+.uname{font-weight:650}
+.bal{font-weight:700;color:var(--warn);white-space:nowrap}
+select{background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:var(--rs);
+  padding:10px 13px;font:inherit;cursor:pointer}
+select:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,93,158,.16)}
+.formgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:6px}
+.formgrid label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
+.formgrid input{width:100%}
+.checks{display:flex;gap:20px;flex-wrap:wrap;margin:12px 0}
+.check{display:flex;align-items:center;gap:8px;color:var(--text);font-size:14px;cursor:pointer}
+.check input{width:17px;height:17px;accent-color:var(--accent);cursor:pointer}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:8px 18px;font-size:14px;align-items:center}
+.kv .k{color:var(--faint)}
+.danger-zone{border-color:rgba(255,93,108,.32)}
+.led{display:flex;justify-content:space-between;gap:12px;font-size:13px;padding:8px 0;border-bottom:1px solid var(--border)}
+.led:last-child{border:0}.led:first-child{padding-top:0}
+.pos{color:var(--ok);white-space:nowrap}.neg{color:var(--danger);white-space:nowrap}
+.pager{display:flex;gap:10px;align-items:center;justify-content:center;margin-top:20px}
 """
 
 JS = """
@@ -198,6 +231,9 @@ document.querySelectorAll('.up-input').forEach(function(inp){
     var b=box.querySelector('button'); if(b) b.classList.add('primary');
   });
 });
+document.querySelectorAll('form[data-confirm]').forEach(function(f){
+  f.addEventListener('submit',function(e){ if(!confirm(f.getAttribute('data-confirm'))) e.preventDefault(); });
+});
 """
 
 FONT = "<link rel=preconnect href='https://fonts.googleapis.com'><link rel=preconnect href='https://fonts.gstatic.com' crossorigin><link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap' rel=stylesheet>"
@@ -211,7 +247,7 @@ def page(title: str, body: str, active: str = "") -> HTMLResponse:
         "<div class=topbar><div class=bar>"
         "<a class=brand href='/'><span class=logo>♥</span> <span class=nm>Club Romance</span> "
         "<span class=badge-soft>admin</span></a>"
-        f"<nav class=nav>{nav('/', 'Главная', 'home')}{nav('/stats', 'Статистика', 'stats')}</nav>"
+        f"<nav class=nav>{nav('/', 'Главная', 'home')}{nav('/users', 'Пользователи', 'users')}{nav('/stats', 'Статистика', 'stats')}</nav>"
         "</div></div>"
     )
     return HTMLResponse(
@@ -253,7 +289,7 @@ async def dashboard(_: str = Depends(auth)):
     st = await c.db.gate_stats()
     conv = f"{round(100 * st['passed'] / st['total'])}%" if st["total"] else "—"
     chips = (
-        f"<a class=chip href='/stats'>👥 <b>{st['total']}</b> юзеров</a>"
+        f"<a class=chip href='/users'>👥 <b>{st['total']}</b> юзеров</a>"
         f"<a class=chip href='/stats'>🔓 <b>{st['passed']}</b> прошли подписку</a>"
         f"<a class=chip href='/stats'>📈 <b>{conv}</b> конверсия</a>"
     )
@@ -460,6 +496,265 @@ async def channel_add(chat_id: int = Form(...), title: str = Form(""), link: str
 async def channel_delete(chat_id: int, _: str = Depends(auth)):
     await ctx().db.remove_channel(chat_id)
     return RedirectResponse("/", status_code=303)
+
+
+# ── Пользователи ─────────────────────────────────────────────
+@app.get("/users", response_class=HTMLResponse)
+async def users_page(q: str = "", offset: int = 0, _: str = Depends(auth)):
+    c = ctx()
+    q = (q or "").strip()
+    offset = max(0, offset)
+    total = await c.db.count_users(q)
+    users = await c.db.list_users(q, limit=PAGE, offset=offset)
+
+    rows = ""
+    for u in users:
+        gate = ("<span class='pill ok'>● прошёл ОП</span>" if u["gate_passed"]
+                else "<span class='pill no'>○ не прошёл</span>")
+        un = f"@{esc(u['username'])}" if u["username"] else "—"
+        rows += (
+            f"<a class='card urow' href='/users/{u['user_id']}'>"
+            f"<div><div class=uname>{esc(u['name'] or 'без имени')} "
+            f"<span class=tag>{u['user_id']}</span></div>"
+            f"<div class=muted>{un} · рег. {fmt_ts(u['created_at'])}</div></div>"
+            f"<div style='display:flex;align-items:center;gap:12px'>"
+            f"<span class=bal>💎 {u['crystals']}</span>{gate}</div></a>"
+        )
+    if not users:
+        rows = "<div class=empty>Никого не найдено.</div>"
+
+    qq = f"&q={quote(q)}" if q else ""
+    parts = []
+    if offset > 0:
+        parts.append(f"<a class='btn ghost sm' href='/users?offset={max(0, offset - PAGE)}{qq}'>← Назад</a>")
+    if offset + PAGE < total:
+        parts.append(f"<a class='btn ghost sm' href='/users?offset={offset + PAGE}{qq}'>Вперёд →</a>")
+    rng = f"{offset + 1}–{min(offset + PAGE, total)} из {total}" if total else "0"
+    pager = f"<div class=pager>{''.join(parts)}<span class=muted>{rng}</span></div>"
+
+    search = (
+        "<form class=field method=get action='/users' style='margin:0 0 16px'>"
+        f"<input type=text name=q value='{esc(q)}' placeholder='ID, имя или @username'>"
+        "<button class='btn primary'>Поиск</button>"
+        + ("<a class='btn ghost' href='/users'>Сброс</a>" if q else "")
+        + "</form>"
+    )
+    body = (
+        "<a class=back href='/'>← На главную</a>"
+        "<div class=hero><h1>Пользователи</h1>"
+        f"<p class=sub>Всего {total} · баланс кристаллов и управление</p></div>"
+        f"{search}<div class=list>{rows}</div>{pager}"
+    )
+    return page("Пользователи", body, "users")
+
+
+@app.get("/users/{uid}", response_class=HTMLResponse)
+async def user_detail(uid: int, _: str = Depends(auth)):
+    c = ctx()
+    u = await c.db.get_user(uid)
+    if u is None:
+        raise HTTPException(404)
+    progs = await c.db.list_progress(uid)
+    comps = await c.db.list_completions(uid)
+    ach_codes = await c.db.list_achievements(uid)
+    refs = await c.db.count_referrals(uid)
+    led = await c.db.recent_ledger(uid, 15)
+    a = f"/users/{uid}"
+
+    def story_label(sid: str) -> str:
+        s = c.registry.get(sid)
+        return f"{esc(s.cover)} {esc(s.title)}" if s else f"<span class=tag>{esc(sid)}</span>"
+
+    def ach_name(code: str) -> str:
+        for s in c.registry.all():
+            spec = s.achievements.get(code)
+            if spec:
+                return esc(spec.get("name") or spec.get("title") or code)
+        return esc(code)
+
+    gate = ("<span class='pill ok'>прошёл ОП</span>" if u["gate_passed"]
+            else "<span class='pill no'>не прошёл ОП</span>")
+    sub = "<span class='pill ok'>подписка засчитана</span>" if u["subscribed"] else ""
+
+    kv = (
+        "<div class=kv>"
+        f"<span class=k>ID</span><span><span class=tag>{u['user_id']}</span></span>"
+        f"<span class=k>Имя</span><span>{esc(u['name'] or '—')}</span>"
+        f"<span class=k>Username</span><span>{('@' + esc(u['username'])) if u['username'] else '—'}</span>"
+        f"<span class=k>Язык</span><span>{esc(u['language'])}</span>"
+        f"<span class=k>Уведомления</span><span>{'вкл' if u['notifications'] else 'выкл'}</span>"
+        f"<span class=k>Ежедневная</span><span>{fmt_ts(u['last_daily'])}</span>"
+        f"<span class=k>Пригласил</span><span>{u['referred_by'] or '—'}</span>"
+        f"<span class=k>Рефералов</span><span>{refs}</span>"
+        f"<span class=k>Регистрация</span><span>{fmt_ts(u['created_at'])}</span>"
+        "</div>"
+    )
+
+    crystals = (
+        "<section><div class=sec-head><h2>Кристаллы</h2>"
+        f"<span class=hint>текущий баланс — 💎 {u['crystals']}</span></div>"
+        f"<div class=card><form method=post action='{a}/crystals' class=field>"
+        "<select name=mode><option value=add>Изменить (±)</option>"
+        "<option value=set>Установить точно</option></select>"
+        "<input type=number name=amount value='0' required style='max-width:160px'>"
+        "<button class='btn primary'>Применить</button></form>"
+        "<div class=muted>Операция пишется в журнал (виден ниже). В минус уйти нельзя.</div></div></section>"
+    )
+
+    langs = ""
+    for code, label in (("ru", "Русский"), ("en", "English"), ("uk", "Українська")):
+        langs += f"<option value={code}{' selected' if u['language'] == code else ''}>{label}</option>"
+
+    def chk(field: str, label: str) -> str:
+        return (f"<label class=check><input type=checkbox name={field} value=1"
+                f"{' checked' if u[field] else ''}> {label}</label>")
+
+    profile = (
+        "<section><div class=sec-head><h2>Профиль</h2>"
+        "<span class=hint>имя, юзернейм, язык и флаги</span></div>"
+        f"<div class=card><form method=post action='{a}/update'>"
+        "<div class=formgrid>"
+        f"<label>Имя<input type=text name=name value='{esc(u['name'])}'></label>"
+        f"<label>Username<input type=text name=username value='{esc(u['username'])}'></label>"
+        f"<label>Язык<select name=language>{langs}</select></label>"
+        "</div>"
+        f"<div class=checks>{chk('gate_passed', 'Прошёл ОП')}"
+        f"{chk('subscribed', 'Награда за подписку')}{chk('notifications', 'Уведомления')}</div>"
+        "<button class='btn primary'>Сохранить профиль</button></form></div></section>"
+    )
+
+    if progs:
+        pr = ""
+        for p in progs:
+            s = c.registry.get(p["story_id"])
+            sc = s.scene(p["current_scene"]) if s else None
+            scene_t = esc(sc["title"]) if sc and sc.get("title") else esc(p["current_scene"])
+            status = "завершено" if p["status"] == "completed" else "в процессе"
+            pr += (f"<div class=led><span>{story_label(p['story_id'])} — {scene_t}</span>"
+                   f"<span class=muted>{status} · {fmt_ts(p['updated_at'])}</span></div>")
+        progress_html = f"<div class=card>{pr}</div>"
+    else:
+        progress_html = "<div class=empty>Нет историй в процессе.</div>"
+
+    if comps:
+        cm = ""
+        for cp in comps:
+            secret = " · 🔒секретка" if cp["secret"] else ""
+            ttl = esc(cp["ending_title"] or cp["ending_code"] or "финал")
+            cm += (f"<div class=led><span>{story_label(cp['story_id'])} — {ttl}{secret}</span>"
+                   f"<span class=muted>×{cp['plays']} · {fmt_ts(cp['completed_at'])}</span></div>")
+        comp_html = f"<div class=card>{cm}</div>"
+    else:
+        comp_html = "<div class=empty>Ещё не завершал историй.</div>"
+
+    if ach_codes:
+        ach_html = ("<div class=chips>"
+                    + "".join(f"<span class=chip>🏆 {ach_name(co)}</span>" for co in sorted(ach_codes))
+                    + "</div>")
+    else:
+        ach_html = "<div class=empty>Достижений нет.</div>"
+
+    if led:
+        lr = ""
+        for e in led:
+            amt = int(e["amount"])
+            cls, sign = ("pos", "+") if amt >= 0 else ("neg", "")
+            meta = f" <span class=muted>{esc(e['meta'])}</span>" if e["meta"] else ""
+            lr += (f"<div class=led><span>{esc(e['type'])}{meta}</span>"
+                   f"<span class='{cls}'>{sign}{amt} 💎 <span class=muted>· {fmt_ts(e['created_at'])}</span></span></div>")
+        led_html = f"<div class=card>{lr}</div>"
+    else:
+        led_html = "<div class=empty>Операций нет.</div>"
+
+    unlock_opts = "".join(f"<option value='{esc(s.id)}'>{esc(s.title)}</option>" for s in c.registry.all())
+    danger = (
+        "<section><div class=sec-head><h2>Опасная зона</h2></div>"
+        "<div class='card danger-zone'>"
+        f"<form method=post action='{a}/unlock' class=field style='margin-bottom:14px'>"
+        f"<select name=story_id>{unlock_opts}</select>"
+        "<button class='btn ghost'>Открыть историю (разблокировать)</button></form>"
+        "<div class=field>"
+        f"<form method=post action='{a}/reset' data-confirm='Сбросить весь игровой прогресс "
+        "(истории, концовки, достижения)? Баланс и профиль останутся.'>"
+        "<button class='btn danger'>Сбросить прогресс</button></form>"
+        f"<form method=post action='{a}/delete' data-confirm='Удалить пользователя НАВСЕГДА "
+        "со всеми данными? Это необратимо.'>"
+        "<button class='btn danger'>Удалить пользователя</button></form>"
+        "</div></div></section>"
+    )
+
+    body = (
+        "<a class=back href='/users'>← К пользователям</a>"
+        f"<div class=hero><h1>{esc(u['name'] or 'Пользователь')} "
+        f"<span class=tag style='font-size:14px'>{u['user_id']}</span></h1>"
+        f"<p class=sub>💎 {u['crystals']} &nbsp; {gate} {sub}</p></div>"
+        f"<div class=card>{kv}</div>"
+        f"{crystals}{profile}"
+        "<section><div class=sec-head><h2>Истории в процессе</h2></div>" + progress_html + "</section>"
+        "<section><div class=sec-head><h2>Завершённые</h2></div>" + comp_html + "</section>"
+        "<section><div class=sec-head><h2>Достижения</h2></div>" + ach_html + "</section>"
+        "<section><div class=sec-head><h2>Журнал операций</h2></div>" + led_html + "</section>"
+        + danger
+    )
+    return page(f"Пользователь {uid}", body, "users")
+
+
+@app.post("/users/{uid}/crystals")
+async def user_crystals(uid: int, mode: str = Form("add"), amount: int = Form(0), _: str = Depends(auth)):
+    db = ctx().db
+    if await db.get_user(uid) is None:
+        raise HTTPException(404)
+    if mode == "set":
+        await db.set_crystals(uid, amount)
+    else:
+        await db.adjust_crystals(uid, amount)
+    return RedirectResponse(f"/users/{uid}", status_code=303)
+
+
+@app.post("/users/{uid}/update")
+async def user_update(
+    uid: int,
+    name: str = Form(""),
+    username: str = Form(""),
+    language: str = Form("ru"),
+    gate_passed: str = Form(""),
+    subscribed: str = Form(""),
+    notifications: str = Form(""),
+    _: str = Depends(auth),
+):
+    db = ctx().db
+    if await db.get_user(uid) is None:
+        raise HTTPException(404)
+    await db.update_user(
+        uid,
+        name=name.strip(),
+        username=username.strip().lstrip("@"),
+        language=(language or "ru").strip() or "ru",
+        gate_passed=1 if gate_passed else 0,
+        subscribed=1 if subscribed else 0,
+        notifications=1 if notifications else 0,
+    )
+    return RedirectResponse(f"/users/{uid}", status_code=303)
+
+
+@app.post("/users/{uid}/unlock")
+async def user_unlock(uid: int, story_id: str = Form(...), _: str = Depends(auth)):
+    if await ctx().db.get_user(uid) is None:
+        raise HTTPException(404)
+    await ctx().db.unlock_story(uid, story_id)
+    return RedirectResponse(f"/users/{uid}", status_code=303)
+
+
+@app.post("/users/{uid}/reset")
+async def user_reset(uid: int, _: str = Depends(auth)):
+    await ctx().db.reset_user_game(uid)
+    return RedirectResponse(f"/users/{uid}", status_code=303)
+
+
+@app.post("/users/{uid}/delete")
+async def user_delete(uid: int, _: str = Depends(auth)):
+    await ctx().db.delete_user(uid)
+    return RedirectResponse("/users", status_code=303)
 
 
 if __name__ == "__main__":
