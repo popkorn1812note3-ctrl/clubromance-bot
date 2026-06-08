@@ -1,0 +1,25 @@
+# systemd unit — ClubRomance в режиме POLLING (без домена/HTTPS, работает сразу).
+# Установка:
+#   sudo cp deploy/clubromance.service /etc/systemd/system/
+#   отредактируйте пути/пользователя под свой сервер
+#   sudo systemctl daemon-reload && sudo systemctl enable --now clubromance
+#   journalctl -u clubromance -f      # логи
+
+[Unit]
+Description=ClubRomance MAX bot (polling)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clubromance
+WorkingDirectory=/opt/clubromance
+ExecStart=/opt/clubromance/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+# .env подхватывается python-dotenv из WorkingDirectory
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+# nginx reverse-proxy для webhook-режима. Замените bot.example.com на свой домен.
+# Установка:
+#   sudo cp deploy/nginx.conf.example /etc/nginx/sites-available/clubromance
+#   sudo ln -s /etc/nginx/sites-available/clubromance /etc/nginx/sites-enabled/
+#   sudo certbot --nginx -d bot.example.com   # выпустит сертификат и допишет ssl
+#   sudo nginx -t && sudo systemctl reload nginx
+
+server {
+    listen 80;
+    server_name bot.example.com;
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    server_name bot.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/bot.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bot.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

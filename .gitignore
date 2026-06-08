@@ -1,0 +1,22 @@
+# Секреты и данные — НИКОГДА не коммитим
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Логи рантайма
+runtime.log
+runtime*.log
+*.err.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Редакторы / окружение
+.idea/
+.vscode/
+.claude/

@@ -1,0 +1,10 @@
+# ClubRomance — интерактивный бот-новелла для мессенджера MAX
+# Python 3.13+
+
+aiohttp>=3.9          # HTTP-клиент к MAX Bot API
+aiosqlite>=0.20       # асинхронный SQLite (хранилище прогресса)
+python-dotenv>=1.0    # загрузка .env
+
+# Только для webhook-режима (прод). Для polling-режима не нужны.
+fastapi>=0.110
+uvicorn>=0.29

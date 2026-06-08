@@ -1,0 +1,23 @@
+# systemd unit — ClubRomance в режиме WEBHOOK (прод, нужен домен + nginx + certbot).
+# Использовать ВМЕСТО clubromance.service, когда поднят HTTPS.
+#   sudo cp deploy/clubromance-webhook.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now clubromance-webhook
+#   journalctl -u clubromance-webhook -f
+
+[Unit]
+Description=ClubRomance MAX bot (webhook)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clubromance
+WorkingDirectory=/opt/clubromance
+ExecStart=/opt/clubromance/.venv/bin/uvicorn webhook_server:app --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+
+[Install]
+WantedBy=multi-user.target

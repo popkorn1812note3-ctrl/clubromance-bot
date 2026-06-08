@@ -1,0 +1,9 @@
+# Нормализация переводов строк: в репозитории — LF (чтобы на Linux-сервере
+# .service/.conf/.sh/.py были чистыми, без CRLF).
+* text=auto eol=lf
+
+# Windows-скрипт оставляем с CRLF
+*.ps1 text eol=crlf
+
+# Бинарники
+*.docx binary
