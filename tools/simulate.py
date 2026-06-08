@@ -118,11 +118,8 @@ async def run_strategy(story_id, pick, *, hero_name=None, grant=3000, verbose=Fa
     # Проверки UI: шапка с балансом, выделение имён, аннотации выбора.
     gameplay = [m for m in api.shown if "💎" in m["text"] and "┄" in m["text"]]
     has_header = bool(gameplay)
-    has_annotation = any(
-        ("+" in b["text"] and "·" in b["text"])
-        for m in api.shown if m["kb"]
-        for row in m["kb"] for b in row
-    )
+    # Аннотации эффектов теперь в ТЕЛЕ сообщения (список вариантов), не на кнопках.
+    has_annotation = any(("(+" in m["text"] or "(💎" in m["text"]) for m in api.shown)
     hero_shown = (hero_name is None) or any(hero_name in m["text"] for m in api.shown)
     if verbose:
         print(f"\n===== ТРАНСКРИПТ [{story_id}] (всего новых сообщений={len(api.sent)}, правок={len(api.edits)}) =====")

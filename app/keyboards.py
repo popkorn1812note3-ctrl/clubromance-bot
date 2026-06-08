@@ -171,9 +171,11 @@ def help_menu() -> Keyboard:
 
 
 # ── Игровой процесс ──────────────────────────────────────────
-def annotate_choice(story: Story, choice: dict[str, Any]) -> str:
-    """Текст кнопки с пометкой эффектов В НАЧАЛЕ (чтобы было видно при обрезке):
-    «+1🔥 · Я тебя люблю», «💎15 +2💙 · Продолжить переписку»."""
+NUM = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣"]
+
+
+def choice_annotation(story: Story, choice: dict[str, Any]) -> str:
+    """Пометка эффектов варианта: «+1🔥», «💎20 +1🔥». Пусто, если эффектов нет."""
     stats = story.stats
     meta: list[str] = []
     cost = int(choice.get("cost", 0))
@@ -184,13 +186,20 @@ def annotate_choice(story: Story, choice: dict[str, Any]) -> str:
         if spec and spec.get("kind") == "main" and isinstance(val, (int, float)) and val:
             sign = "+" if val > 0 else ""
             meta.append(f"{sign}{val}{spec['emoji']}")
-    text = choice["text"]
-    return f"{' '.join(meta)} · {text}" if meta else text
+    return " ".join(meta)
 
 
 def play_choices(story: Story, choices: list[dict[str, Any]]) -> Keyboard:
-    """Кнопки вариантов. Индекс i — позиция в ВИДИМОМ списке (детерминирована)."""
-    return [[cb(annotate_choice(story, ch), f"pl:{story.id}:c:{i}")] for i, ch in enumerate(choices)]
+    """Кнопки вариантов — компактные НОМЕРА (полный текст в теле сообщения, чтобы
+    ничего не обрезалось). Премиум-варианты помечаются 💎ценой прямо на кнопке."""
+    kb: Keyboard = []
+    for i, ch in enumerate(choices):
+        label = NUM[i] if i < len(NUM) else f"#{i + 1}"
+        cost = int(ch.get("cost", 0))
+        if cost > 0:
+            label += f" {GEM}{cost}"
+        kb.append([cb(label, f"pl:{story.id}:c:{i}")])
+    return kb
 
 
 def play_next(story_id: str) -> Keyboard:

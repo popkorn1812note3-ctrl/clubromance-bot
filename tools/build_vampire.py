@@ -101,7 +101,7 @@ scene("v1_terrace", next=[
     {"goto": "v1_terrace_k"},
 ])
 
-scene("v1_terrace_k", title="Башня · ночь", bg="tower", blocks=[
+scene("v1_terrace_k", title="Башня · ночь", bg="tower", fx={"_dl_lock": "kael"}, blocks=[
     n("Ночью ты поднимаешься на башню. Каэль уже там — смотрит на луну, будто спорит с ней."),
     say("Каэль", "Тебе стоит спать. Завтра будет тяжелее."),
     say("Героиня", "Ты тоже не спишь."),
@@ -120,7 +120,7 @@ scene("v1_prem_k", title="Башня · ночь", bg="tower", blocks=[
     n("Луна замирает между вами. Он касается метки на твоём запястье — и она вспыхивает мягким светом."),
 ], next="v1_ch1_end")
 
-scene("v1_terrace_d", title="Крыша · ночь", bg="tower", blocks=[
+scene("v1_terrace_d", title="Крыша · ночь", bg="tower", fx={"_dl_lock": "dorian"}, blocks=[
     n("Ты находишь Дориана на самой кромке крыши — там, где Орден заканчивается и начинается свобода."),
     say("Дориан", "Пришла столкнуть меня вниз? Очередь занимай."),
     say("Героиня", "Пришла понять, чему ты улыбаешься, когда всем страшно."),
@@ -201,9 +201,11 @@ scene("v2_kael", title="Зал Магистра · спор", bg="hall", blocks=
     ])
 
 scene("v2_premium", next=[
-    {"if": "romance_kael >= romance_dorian and romance_kael >= romance_mira", "goto": "v2_prem_k"},
-    {"if": "romance_dorian >= romance_mira", "goto": "v2_prem_d"},
-    {"goto": "v2_prem_m"},
+    {"if": "romance_mira > romance_kael and romance_mira > romance_dorian", "goto": "v2_prem_m"},
+    {"if": "_dl_lock == 'kael'", "goto": "v2_prem_k"},
+    {"if": "_dl_lock == 'dorian'", "goto": "v2_prem_d"},
+    {"if": "romance_kael >= romance_dorian", "goto": "v2_prem_k"},
+    {"goto": "v2_prem_d"},
 ])
 
 scene("v2_prem_k", title="Покои Магистра", bg="hall", blocks=[
@@ -376,7 +378,7 @@ story = {
     "vars": {
         "will": 0, "guile": 0, "allure": 0,
         "romance_kael": 0, "romance_dorian": 0, "romance_mira": 0,
-        "ritual_clue": 0, "_completed": 0, "_fate_choice": "",
+        "ritual_clue": 0, "_completed": 0, "_fate_choice": "", "_dl_lock": "",
     },
     "backgrounds": {
         "cell": None, "hall": None, "gallery": None, "archive": None,
@@ -399,11 +401,12 @@ story = {
     },
     "ending_groups": {
         "romance": [
-            {"if": "romance_kael >= romance_dorian and romance_kael >= romance_mira",
-             "code": "kael", "title": "Вечная Ночь", "goto": "end_kael"},
-            {"if": "romance_dorian >= romance_mira",
-             "code": "dorian", "title": "Дикая Кровь", "goto": "end_dorian"},
-            {"code": "mira", "title": "Две Луны", "goto": "end_mira"},
+            {"if": "romance_mira > romance_kael and romance_mira > romance_dorian",
+             "code": "mira", "title": "Две Луны", "goto": "end_mira"},
+            {"if": "_dl_lock == 'kael'", "code": "kael", "title": "Вечная Ночь", "goto": "end_kael"},
+            {"if": "_dl_lock == 'dorian'", "code": "dorian", "title": "Дикая Кровь", "goto": "end_dorian"},
+            {"if": "romance_kael >= romance_dorian", "code": "kael", "title": "Вечная Ночь", "goto": "end_kael"},
+            {"code": "dorian", "title": "Дикая Кровь", "goto": "end_dorian"},
         ],
         "fate": [
             # По выбору игрока (выбор гейтится статами), а не по приоритету статов.

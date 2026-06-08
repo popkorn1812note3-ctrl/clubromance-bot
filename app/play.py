@@ -61,8 +61,8 @@ def fmt_speaker(story: Story, speaker: str, hero: str) -> str:
 
 
 def render_scene(story: Story, scene: dict[str, Any], vblocks: list[dict[str, Any]],
-                 variables: dict[str, Any], balance: int) -> str:
-    """Полный текст сообщения сцены: шапка-интерфейс + локация + реплики."""
+                 vchoices: list[dict[str, Any]], variables: dict[str, Any], balance: int) -> str:
+    """Полный текст сообщения сцены: шапка-интерфейс + локация + реплики + варианты."""
     hero = hero_name(variables)
     body: list[str] = []
     title = scene.get("title")
@@ -75,6 +75,14 @@ def render_scene(story: Story, scene: dict[str, Any], vblocks: list[dict[str, An
             body.append(txt)
         else:
             body.append(f"{fmt_speaker(story, sp, hero)} {txt}")
+    if vchoices:
+        # Полный текст вариантов — в теле (на кнопках только номера, чтобы не обрезалось).
+        lines = ["*— Твой выбор: —*"]
+        for i, ch in enumerate(vchoices):
+            num = kb.NUM[i] if i < len(kb.NUM) else f"#{i + 1}"
+            ann = kb.choice_annotation(story, ch)
+            lines.append(f"{num} {subst(ch['text'], hero)}" + (f"  _({ann})_" if ann else ""))
+        body.append("\n".join(lines))
     header = status_line(story, variables, balance)
     return f"{header}\n{SEP}\n\n" + "\n\n".join(body)
 
@@ -202,9 +210,12 @@ async def enter(ctx: Context, user_id: int, story: Story, scene_id: str,
     user = await ctx.db.get_user(user_id)
     balance = int(user["crystals"]) if user else 0
     keyboard = _keyboard_for(story, scene, vchoices, variables)
-    text = render_scene(story, scene, vblocks, variables, balance)
+    text = render_scene(story, scene, vblocks, vchoices, variables, balance)
     if new_chapter_banner:  # баннер главы — в шапку того же сообщения
         text = f"📖 *{esc(new_chapter_banner)}*\n\n{text}"
+    if newly:  # достижение — заметным баннером в шапке сцены (плюс всплывашка)
+        ach = " · ".join(f"{a.get('emoji', '🏆')} {esc(a.get('title', a['code']))}" for a in newly)
+        text = f"🏆 *Новое достижение!*  {ach}  +{len(newly)}{GEM}\n\n{text}"
     image_url = story.background_url(scene.get("bg"))
     # Редактируем ОДИН экран на месте (или присылаем новый — после текста юзера).
     await ctx.show_screen(user_id, text, keyboard, image_url=image_url, force_new=reanchor)
@@ -227,7 +238,7 @@ async def resume(ctx: Context, user_id: int, story: Story, prog: dict[str, Any],
     user = await ctx.db.get_user(user_id)
     balance = int(user["crystals"]) if user else 0
     keyboard = _keyboard_for(story, scene, vchoices, variables)
-    text = render_scene(story, scene, vblocks, variables, balance)
+    text = render_scene(story, scene, vblocks, vchoices, variables, balance)
     chap = prog.get("current_chapter")
     if chap:
         text = f"📖 *{esc(chap)}* — продолжаем\n\n{text}"

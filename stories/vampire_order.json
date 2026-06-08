@@ -16,7 +16,8 @@
     "romance_mira": 0,
     "ritual_clue": 0,
     "_completed": 0,
-    "_fate_choice": ""
+    "_fate_choice": "",
+    "_dl_lock": ""
   },
   "backgrounds": {
     "cell": null,
@@ -84,21 +85,33 @@
   "ending_groups": {
     "romance": [
       {
-        "if": "romance_kael >= romance_dorian and romance_kael >= romance_mira",
+        "if": "romance_mira > romance_kael and romance_mira > romance_dorian",
+        "code": "mira",
+        "title": "Две Луны",
+        "goto": "end_mira"
+      },
+      {
+        "if": "_dl_lock == 'kael'",
         "code": "kael",
         "title": "Вечная Ночь",
         "goto": "end_kael"
       },
       {
-        "if": "romance_dorian >= romance_mira",
+        "if": "_dl_lock == 'dorian'",
         "code": "dorian",
         "title": "Дикая Кровь",
         "goto": "end_dorian"
       },
       {
-        "code": "mira",
-        "title": "Две Луны",
-        "goto": "end_mira"
+        "if": "romance_kael >= romance_dorian",
+        "code": "kael",
+        "title": "Вечная Ночь",
+        "goto": "end_kael"
+      },
+      {
+        "code": "dorian",
+        "title": "Дикая Кровь",
+        "goto": "end_dorian"
       }
     ],
     "fate": [
@@ -419,6 +432,9 @@
     "v1_terrace_k": {
       "title": "Башня · ночь",
       "bg": "tower",
+      "fx": {
+        "_dl_lock": "kael"
+      },
       "blocks": [
         {
           "text": "Ночью ты поднимаешься на башню. Каэль уже там — смотрит на луну, будто спорит с ней."
@@ -480,6 +496,9 @@
     "v1_terrace_d": {
       "title": "Крыша · ночь",
       "bg": "tower",
+      "fx": {
+        "_dl_lock": "dorian"
+      },
       "blocks": [
         {
           "text": "Ты находишь Дориана на самой кромке крыши — там, где Орден заканчивается и начинается свобода."
@@ -741,15 +760,23 @@
     "v2_premium": {
       "next": [
         {
-          "if": "romance_kael >= romance_dorian and romance_kael >= romance_mira",
+          "if": "romance_mira > romance_kael and romance_mira > romance_dorian",
+          "goto": "v2_prem_m"
+        },
+        {
+          "if": "_dl_lock == 'kael'",
           "goto": "v2_prem_k"
         },
         {
-          "if": "romance_dorian >= romance_mira",
+          "if": "_dl_lock == 'dorian'",
           "goto": "v2_prem_d"
         },
         {
-          "goto": "v2_prem_m"
+          "if": "romance_kael >= romance_dorian",
+          "goto": "v2_prem_k"
+        },
+        {
+          "goto": "v2_prem_d"
         }
       ]
     },

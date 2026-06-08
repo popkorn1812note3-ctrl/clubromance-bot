@@ -18,7 +18,8 @@
     "secret_letter_clue": 0,
     "secret_ending_unlocked": 0,
     "_completed": 0,
-    "_ending_choice": ""
+    "_ending_choice": "",
+    "_dl_lock": ""
   },
   "backgrounds": {
     "room": null,
@@ -98,21 +99,33 @@
   "ending_groups": {
     "romance": [
       {
-        "if": "romance_leonard >= romance_damian and romance_leonard >= romance_sofia",
+        "if": "romance_sofia > romance_damian and romance_sofia > romance_leonard",
+        "code": "sofia",
+        "title": "По Одну Сторону",
+        "goto": "rom_sofia"
+      },
+      {
+        "if": "_dl_lock == 'leonard'",
         "code": "leonard",
         "title": "Запретное Притяжение",
         "goto": "rom_leonard"
       },
       {
-        "if": "romance_damian >= romance_sofia",
+        "if": "_dl_lock == 'damian'",
         "code": "damian",
         "title": "Огонь и Сталь",
         "goto": "rom_damian"
       },
       {
-        "code": "sofia",
-        "title": "По Одну Сторону",
-        "goto": "rom_sofia"
+        "if": "romance_leonard >= romance_damian",
+        "code": "leonard",
+        "title": "Запретное Притяжение",
+        "goto": "rom_leonard"
+      },
+      {
+        "code": "damian",
+        "title": "Огонь и Сталь",
+        "goto": "rom_damian"
       }
     ],
     "business": [
@@ -1082,6 +1095,9 @@
     "c2_s5d": {
       "title": "Терраса особняка · вечер",
       "bg": "terrace",
+      "fx": {
+        "_dl_lock": "damian"
+      },
       "blocks": [
         {
           "text": "Вечером терраса пахнет дождём, дорогим табаком и чужими секретами."
@@ -1126,6 +1142,9 @@
     "c2_s5l": {
       "title": "Терраса особняка · вечер",
       "bg": "terrace",
+      "fx": {
+        "_dl_lock": "leonard"
+      },
       "blocks": [
         {
           "text": "Вечером терраса пахнет дождём, дорогим табаком и чужими секретами."
@@ -1580,15 +1599,23 @@
     "c3_s5": {
       "next": [
         {
-          "if": "romance_leonard >= romance_damian and romance_leonard >= romance_sofia",
+          "if": "romance_sofia > romance_damian and romance_sofia > romance_leonard",
+          "goto": "c3_s5s"
+        },
+        {
+          "if": "_dl_lock == 'leonard'",
           "goto": "c3_s5l"
         },
         {
-          "if": "romance_damian >= romance_sofia",
+          "if": "_dl_lock == 'damian'",
           "goto": "c3_s5d"
         },
         {
-          "goto": "c3_s5s"
+          "if": "romance_leonard >= romance_damian",
+          "goto": "c3_s5l"
+        },
+        {
+          "goto": "c3_s5d"
         }
       ]
     },
@@ -2230,19 +2257,19 @@
           "text": "За окном начинается утро. На этот раз оно не похоже на угрозу."
         },
         {
+          "speaker": "София",
+          "text": "Пойдём. У живых всё ещё есть планы.",
+          "if": "romance_sofia > romance_damian and romance_sofia > romance_leonard"
+        },
+        {
           "speaker": "Леонард",
           "text": "Он бы гордился. И, к счастью, вы не обязаны повторять его ошибки.",
-          "if": "romance_leonard >= romance_damian and romance_leonard >= romance_sofia"
+          "if": "_dl_lock == 'leonard' and not (romance_sofia > romance_damian and romance_sofia > romance_leonard)"
         },
         {
           "speaker": "Дэмиан",
           "text": "Теперь ты не одна. Даже если будешь делать вид, что справишься сама.",
-          "if": "romance_damian > romance_leonard and romance_damian >= romance_sofia"
-        },
-        {
-          "speaker": "София",
-          "text": "Пойдём. У живых всё ещё есть планы.",
-          "if": "romance_sofia > romance_leonard and romance_sofia > romance_damian"
+          "if": "_dl_lock == 'damian' and not (romance_sofia > romance_damian and romance_sofia > romance_leonard)"
         },
         {
           "text": "✉️ Секретная концовка открыта: «Последнее письмо»."
