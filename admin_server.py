@@ -148,10 +148,62 @@ async def dashboard(_: str = Depends(auth)):
     )
     body = (
         "<h1>🛠 ClubRomance — админка</h1>"
+        "<p><a href='/stats'><b>📊 Статистика обязательной подписки →</b></a></p>"
         "<h2>📚 Истории (картинки)</h2>" + s_html +
         "<h2>🔒 Каналы обязательной подписки</h2>" + ch_rows + add_ch
     )
     return page("ClubRomance Admin", body)
+
+
+@app.get("/stats", response_class=HTMLResponse)
+async def stats_page(_: str = Depends(auth)):
+    c = ctx()
+    st = await c.db.gate_stats()
+    channels = await c.db.list_required_channels()
+    gate_on = bool(channels)
+    conv = f"{round(100 * st['passed'] / st['total'])}%" if st["total"] else "—"
+
+    funnel = (
+        "<div class=card>"
+        f"<div class=row><b style='font-size:22px'>👥 {st['total']}</b> <span class=muted>всего пользователей зашло в бота</span></div>"
+        f"<div class=row><b style='font-size:22px' class=ok>🔓 {st['passed']}</b> "
+        f"<span class=muted>прошли обязательную подписку · конверсия {conv}</span></div>"
+        + (f"<div class=row><b style='font-size:22px'>⏳ {st['stuck']}</b> <span class=muted>ещё не подписались</span></div>" if gate_on else "")
+        + f"<div class=muted style='margin-top:8px'>🆕 новых сегодня: {st['today']} (прошли {st['today_passed']}) · "
+        f"за 7 дней: {st['week']} (прошли {st['week_passed']})</div>"
+        "</div>"
+    )
+    if not gate_on:
+        funnel += ("<p class=muted>⚠️ Гейт сейчас выключен — каналов нет. Цифра «прошли» "
+                   "станет осмысленной после добавления канала (на главной или добавь бота админом в канал).</p>")
+
+    ch_html = ""
+    for ch in channels:
+        size = "?"
+        admin = False
+        try:
+            chat = await c.api.get_chat(ch["chat_id"])
+            size = chat.get("participants_count", "?")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            me = await c.api.get_my_membership(ch["chat_id"])
+            admin = bool(me.get("is_admin") or me.get("is_owner"))
+        except Exception:  # noqa: BLE001
+            admin = False
+        badge = ("<span class=ok>✅ бот админ — подписка проверяется</span>" if admin
+                 else "<span class=no>⚠️ бот НЕ админ — подписку проверить нельзя (добавь бота админом)</span>")
+        ch_html += (f"<div class=card><b>📢 {esc(ch['title'] or 'Канал')}</b> "
+                    f"<span class=muted>{esc(size)} подписчиков · chat_id {ch['chat_id']}</span><br>{badge}</div>")
+    if not channels:
+        ch_html = "<p class=muted>Каналов нет.</p>"
+
+    body = (
+        "<p><a href='/'>← назад</a></p><h1>📊 Статистика обязательной подписки</h1>"
+        "<h2>Воронка</h2>" + funnel +
+        "<h2>Каналы</h2>" + ch_html
+    )
+    return page("Статистика ОП", body)
 
 
 @app.get("/story/{sid}", response_class=HTMLResponse)

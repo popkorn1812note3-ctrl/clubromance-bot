@@ -71,7 +71,8 @@ class FakeApi:
         return (chat_id, user_id) in self.subscribed
 
     async def get_chat(self, chat_id):
-        return {"title": f"Канал {chat_id}", "link": f"https://max.ru/ch{abs(chat_id)}"}
+        return {"title": f"Канал {chat_id}", "link": f"https://max.ru/ch{abs(chat_id)}",
+                "participants_count": 1234}
 
     async def get_my_membership(self, chat_id):
         return {"is_admin": True}

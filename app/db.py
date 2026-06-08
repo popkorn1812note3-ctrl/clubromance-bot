@@ -265,6 +265,27 @@ class DB:
         await self.conn.execute("UPDATE users SET gate_passed=? WHERE user_id=?", (value, user_id))
         await self.conn.commit()
 
+    async def gate_stats(self) -> dict[str, int]:
+        """Сводка по обязательной подписке: всего юзеров, прошли гейт, новые за день/неделю."""
+        async def one(q: str, *a: Any) -> int:
+            cur = await self.conn.execute(q, a)
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+        now = _now()
+        total = await one("SELECT COUNT(*) FROM users")
+        passed = await one("SELECT COUNT(*) FROM users WHERE gate_passed=1")
+        return {
+            "total": total,
+            "passed": passed,
+            "stuck": max(0, total - passed),
+            "today": await one("SELECT COUNT(*) FROM users WHERE created_at>=?", now - 86400),
+            "week": await one("SELECT COUNT(*) FROM users WHERE created_at>=?", now - 7 * 86400),
+            "today_passed": await one(
+                "SELECT COUNT(*) FROM users WHERE gate_passed=1 AND created_at>=?", now - 86400),
+            "week_passed": await one(
+                "SELECT COUNT(*) FROM users WHERE gate_passed=1 AND created_at>=?", now - 7 * 86400),
+        }
+
     # ── Картинки сцен (фоны по локациям + override сцен) ──────
     async def set_image(self, key: str, photos: dict[str, Any]) -> None:
         await self.conn.execute(
