@@ -28,12 +28,12 @@ class Context:
         text: str,
         keyboard: list[list[dict[str, Any]]] | None = None,
         *,
-        image_url: str | None = None,
+        image: dict[str, Any] | None = None,
     ) -> str | None:
         """Отправка нового сообщения. Возвращает mid (или None)."""
         try:
             resp = await self.api.send_message(
-                user_id=user_id, text=text, keyboard=keyboard, image_url=image_url
+                user_id=user_id, text=text, keyboard=keyboard, image=image
             )
             return self.api.extract_mid(resp)
         except ChatDenied:
@@ -48,7 +48,7 @@ class Context:
         text: str,
         keyboard: list[list[dict[str, Any]]] | None = None,
         *,
-        image_url: str | None = None,
+        image: dict[str, Any] | None = None,
         force_new: bool = False,
     ) -> str | None:
         """Показать экран: ОТРЕДАКТИРОВАТЬ текущее сообщение на месте, либо (если
@@ -57,13 +57,13 @@ class Context:
         old = self.screen_mid.get(user_id)
         if old and not force_new:
             try:
-                await self.api.edit_message(old, text=text, keyboard=keyboard, image_url=image_url)
+                await self.api.edit_message(old, text=text, keyboard=keyboard, image=image)
                 return old
             except ChatDenied:
                 return None
             except MaxError as e:
                 log.debug("edit %s failed: %s — шлём новое", old, e)
-        new_mid = await self.send(user_id, text, keyboard, image_url=image_url)
+        new_mid = await self.send(user_id, text, keyboard, image=image)
         if new_mid:
             self.screen_mid[user_id] = new_mid
             if old and old != new_mid:

@@ -131,6 +131,36 @@ sudo systemctl start clubromance
 
 ---
 
+## Веб-админка (картинки сцен + каналы ОП)
+
+Отдельный сервис на порту 8080, делит БД с ботом.
+
+```bash
+# зависимость для загрузки файлов (если ещё не стоит)
+sudo -u clubromance /opt/clubromance/.venv/bin/pip install -q python-multipart
+
+# логин/пароль админки в .env
+sudo -u clubromance nano /opt/clubromance/.env
+#   ADMIN_USER=admin
+#   ADMIN_PASSWORD=<надёжный пароль>
+#   ADMIN_IDS=<твой max id>,<второй>   # байпас подписки + /give
+
+# сервис
+sudo cp /opt/clubromance/deploy/clubromance-admin.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now clubromance-admin
+journalctl -u clubromance-admin -n 10 --no-pager
+
+# открыть порт
+sudo ufw allow 8080/tcp     # если ufw активен
+```
+
+Заходи: `http://<IP-сервера>:8080` (логин/пароль из `.env`). Там: история → загрузка
+фонов по локациям и картинок к ключевым сценам; раздел каналов обязательной подписки.
+
+> Безопаснее без открытого порта — SSH-туннель: `ADMIN_HOST=127.0.0.1`, в Termius
+> проброс порта 8080, заходи на `http://localhost:8080`.
+
 ## Шпаргалка
 
 | Действие | Команда |

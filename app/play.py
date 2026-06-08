@@ -116,6 +116,14 @@ def _keyboard_for(story: Story, scene: dict[str, Any], vchoices: list[dict[str, 
     return kb.play_final(story.id)
 
 
+async def resolve_image(ctx: Context, story: Story, scene_id: str, scene: dict[str, Any]):
+    """Картинка сцены: override конкретной сцены > фон локации. payload или None."""
+    photos = await ctx.db.get_image(f"scene:{story.id}:{scene_id}")
+    if photos is None and scene.get("bg"):
+        photos = await ctx.db.get_image(f"bg:{story.id}:{scene['bg']}")
+    return {"photos": photos} if photos else None
+
+
 # ── Достижения / завершение ──────────────────────────────────
 async def _award_new(ctx: Context, user_id: int, story: Story, variables: dict[str, Any]) -> list[dict[str, Any]]:
     """Награждает новыми достижениями (+1 💎 за каждое). Возвращает их спеки."""
@@ -216,9 +224,9 @@ async def enter(ctx: Context, user_id: int, story: Story, scene_id: str,
     if newly:  # достижение — заметным баннером в шапке сцены (плюс всплывашка)
         ach = " · ".join(f"{a.get('emoji', '🏆')} {esc(a.get('title', a['code']))}" for a in newly)
         text = f"🏆 *Новое достижение!*  {ach}  +{len(newly)}{GEM}\n\n{text}"
-    image_url = story.background_url(scene.get("bg"))
+    image = await resolve_image(ctx, story, current, scene)
     # Редактируем ОДИН экран на месте (или присылаем новый — после текста юзера).
-    await ctx.show_screen(user_id, text, keyboard, image_url=image_url, force_new=reanchor)
+    await ctx.show_screen(user_id, text, keyboard, image=image, force_new=reanchor)
 
     status = "completed" if variables.get("_completed") else "in_progress"
     await ctx.db.save_progress(user_id, story.id, current, chapter, variables, status)
@@ -242,8 +250,8 @@ async def resume(ctx: Context, user_id: int, story: Story, prog: dict[str, Any],
     chap = prog.get("current_chapter")
     if chap:
         text = f"📖 *{esc(chap)}* — продолжаем\n\n{text}"
-    image_url = story.background_url(scene.get("bg"))
-    await ctx.show_screen(user_id, text, keyboard, image_url=image_url, force_new=reanchor)
+    image = await resolve_image(ctx, story, prog["current_scene"], scene)
+    await ctx.show_screen(user_id, text, keyboard, image=image, force_new=reanchor)
 
 
 # ── Обработка игровых callback'ов ────────────────────────────

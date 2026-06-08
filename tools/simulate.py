@@ -35,19 +35,22 @@ class FakeApi:
         self.deleted: list[str] = []
         self._n = 0
 
-    async def send_message(self, *, user_id=None, chat_id=None, text="", keyboard=None, fmt="markdown", image_url=None):
+    async def send_message(self, *, user_id=None, chat_id=None, text="", keyboard=None, fmt="markdown", image=None):
         self._n += 1
         mid = f"m{self._n}"
-        rec = {"user_id": user_id, "text": text, "kb": keyboard, "mid": mid}
+        rec = {"user_id": user_id, "text": text, "kb": keyboard, "mid": mid, "image": image}
         self.sent.append(rec)
         self.shown.append(rec)
         return {"message": {"body": {"mid": mid}}}
 
-    async def edit_message(self, message_id, *, text="", keyboard=None, fmt="markdown", image_url=None):
-        rec = {"mid": message_id, "text": text, "kb": keyboard}
+    async def edit_message(self, message_id, *, text="", keyboard=None, fmt="markdown", image=None):
+        rec = {"mid": message_id, "text": text, "kb": keyboard, "image": image}
         self.edits.append(rec)
         self.shown.append(rec)
         return {"success": True}
+
+    async def upload_image(self, data, filename="i.png", content_type="image/png"):
+        return {"FAKEHASH": {"token": "faketoken"}}
 
     @staticmethod
     def extract_mid(resp):

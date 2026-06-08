@@ -108,9 +108,11 @@ class MaxClient:
         text: str,
         keyboard: list[list[dict[str, Any]]] | None = None,
         fmt: str | None = "markdown",
-        image_url: str | None = None,
+        image: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Отправка сообщения в личку (user_id) или чат (chat_id)."""
+        """Отправка сообщения в личку (user_id) или чат (chat_id).
+
+        image — payload вложения-картинки, напр. {"photos": {...}} (из upload_image)."""
         if (user_id is None) == (chat_id is None):
             raise ValueError("укажите ровно одно из user_id / chat_id")
         params: dict[str, Any] = {}
@@ -123,8 +125,8 @@ class MaxClient:
         if fmt:
             body["format"] = fmt
         attachments: list[dict[str, Any]] = []
-        if image_url:
-            attachments.append({"type": "image", "payload": {"url": image_url}})
+        if image:
+            attachments.append({"type": "image", "payload": image})
         if keyboard:
             attachments.append({"type": "inline_keyboard", "payload": {"buttons": keyboard}})
         if attachments:
@@ -142,15 +144,15 @@ class MaxClient:
         text: str,
         keyboard: list[list[dict[str, Any]]] | None = None,
         fmt: str | None = "markdown",
-        image_url: str | None = None,
+        image: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Отредактировать сообщение на месте. PUT /messages?message_id=<mid>."""
         body: dict[str, Any] = {"text": text}
         if fmt:
             body["format"] = fmt
         attachments: list[dict[str, Any]] = []
-        if image_url:
-            attachments.append({"type": "image", "payload": {"url": image_url}})
+        if image:
+            attachments.append({"type": "image", "payload": image})
         if keyboard:
             attachments.append({"type": "inline_keyboard", "payload": {"buttons": keyboard}})
         if attachments:
@@ -160,6 +162,24 @@ class MaxClient:
     async def get_messages(self, message_ids: str) -> dict[str, Any]:
         """Прочитать сообщения по id (для диагностики). GET /messages?message_ids=..."""
         return await self._request("GET", "/messages", params={"message_ids": message_ids})
+
+    async def upload_image(self, data: bytes, filename: str = "image.png",
+                           content_type: str = "image/png") -> dict[str, Any]:
+        """Загружает картинку в MAX. Возвращает dict `photos` для вложения
+        {"type": "image", "payload": {"photos": <это>}}."""
+        info = await self._request("POST", "/uploads", params={"type": "image"})
+        url = info.get("url")
+        if not url:
+            raise MaxError(f"/uploads без url: {info}")
+        session = await self._ensure_session()
+        form = aiohttp.FormData()
+        form.add_field("data", data, filename=filename, content_type=content_type)
+        async with session.post(url, data=form) as r:
+            resp = await r.json(content_type=None)
+        photos = (resp or {}).get("photos")
+        if not photos:
+            raise MaxError(f"upload не вернул photos: {resp}")
+        return photos
 
     @staticmethod
     def extract_mid(resp: dict[str, Any]) -> str | None:

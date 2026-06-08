@@ -32,6 +32,10 @@ class Config:
     webhook_port: int
     log_level: str
     admin_ids: frozenset[int]
+    admin_user: str
+    admin_password: str
+    admin_host: str
+    admin_port: int
 
     @property
     def db_abspath(self) -> str:
@@ -60,4 +64,8 @@ def load_config() -> Config:
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper(),
         # Тестовые админы (для команды /give). Переопределяется ADMIN_IDS в .env.
         admin_ids=_parse_ids(os.getenv("ADMIN_IDS", "5479775,3958992")),
+        admin_user=os.getenv("ADMIN_USER", "admin").strip() or "admin",
+        admin_password=os.getenv("ADMIN_PASSWORD", "").strip(),
+        admin_host=os.getenv("ADMIN_HOST", "0.0.0.0").strip(),
+        admin_port=int(os.getenv("ADMIN_PORT", "8080") or "8080"),
     )

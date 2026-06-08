@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS channels (
     added_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS images (
+    key        TEXT PRIMARY KEY,   -- 'bg:<story>:<bgkey>' | 'scene:<story>:<sceneid>'
+    photos     TEXT NOT NULL,      -- JSON dict 'photos' из MAX upload
+    updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS unlocks (
     user_id   INTEGER NOT NULL,
     story_id  TEXT    NOT NULL,
@@ -258,6 +264,28 @@ class DB:
     async def set_gate_passed(self, user_id: int, value: int = 1) -> None:
         await self.conn.execute("UPDATE users SET gate_passed=? WHERE user_id=?", (value, user_id))
         await self.conn.commit()
+
+    # ── Картинки сцен (фоны по локациям + override сцен) ──────
+    async def set_image(self, key: str, photos: dict[str, Any]) -> None:
+        await self.conn.execute(
+            """INSERT INTO images (key, photos, updated_at) VALUES (?,?,?)
+               ON CONFLICT(key) DO UPDATE SET photos=excluded.photos, updated_at=excluded.updated_at""",
+            (key, json.dumps(photos, ensure_ascii=False), _now()),
+        )
+        await self.conn.commit()
+
+    async def get_image(self, key: str) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT photos FROM images WHERE key=?", (key,))
+        row = await cur.fetchone()
+        return json.loads(row["photos"]) if row else None
+
+    async def delete_image(self, key: str) -> None:
+        await self.conn.execute("DELETE FROM images WHERE key=?", (key,))
+        await self.conn.commit()
+
+    async def image_keys(self) -> set[str]:
+        cur = await self.conn.execute("SELECT key FROM images")
+        return {r["key"] for r in await cur.fetchall()}
 
     # ── Разблокировка историй ─────────────────────────────────
     async def is_unlocked(self, user_id: int, story_id: str) -> bool:
