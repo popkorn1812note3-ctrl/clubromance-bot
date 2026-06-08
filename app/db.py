@@ -32,7 +32,16 @@ CREATE TABLE IF NOT EXISTS users (
     subscribed     INTEGER NOT NULL DEFAULT 0,
     referred_by    INTEGER,
     pending        TEXT,
+    gate_passed    INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS channels (
+    chat_id   INTEGER PRIMARY KEY,
+    title     TEXT,
+    link      TEXT,
+    required  INTEGER NOT NULL DEFAULT 1,
+    added_at  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS unlocks (
@@ -113,6 +122,8 @@ class DB:
         cols = {r["name"] for r in await cur.fetchall()}
         if "pending" not in cols:
             await self._conn.execute("ALTER TABLE users ADD COLUMN pending TEXT")
+        if "gate_passed" not in cols:
+            await self._conn.execute("ALTER TABLE users ADD COLUMN gate_passed INTEGER NOT NULL DEFAULT 0")
 
     async def close(self) -> None:
         if self._conn:
@@ -221,6 +232,32 @@ class DB:
         cur = await self.conn.execute("SELECT COUNT(*) AS c FROM referrals WHERE inviter_id=?", (user_id,))
         row = await cur.fetchone()
         return int(row["c"]) if row else 0
+
+    # ── Каналы обязательной подписки (ОП / гейт) ──────────────
+    async def upsert_channel(self, chat_id: int, title: str = "", link: str = "") -> None:
+        await self.conn.execute(
+            """INSERT INTO channels (chat_id, title, link, required, added_at) VALUES (?,?,?,1,?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+                   title=COALESCE(NULLIF(excluded.title,''), channels.title),
+                   link=COALESCE(NULLIF(excluded.link,''), channels.link)""",
+            (chat_id, title, link, _now()),
+        )
+        await self.conn.commit()
+        # Новый канал в гейте → все юзеры проходят гейт заново.
+        await self.conn.execute("UPDATE users SET gate_passed=0")
+        await self.conn.commit()
+
+    async def remove_channel(self, chat_id: int) -> None:
+        await self.conn.execute("DELETE FROM channels WHERE chat_id=?", (chat_id,))
+        await self.conn.commit()
+
+    async def list_required_channels(self) -> list[dict[str, Any]]:
+        cur = await self.conn.execute("SELECT * FROM channels WHERE required=1 ORDER BY added_at")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def set_gate_passed(self, user_id: int, value: int = 1) -> None:
+        await self.conn.execute("UPDATE users SET gate_passed=? WHERE user_id=?", (value, user_id))
+        await self.conn.commit()
 
     # ── Разблокировка историй ─────────────────────────────────
     async def is_unlocked(self, user_id: int, story_id: str) -> bool:

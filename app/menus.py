@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any
 
+from . import gate
 from . import keyboards as kb
 from . import play
 from . import texts as t
@@ -51,6 +52,22 @@ async def show_welcome(ctx: Context, user_id: int) -> None:
 
 async def show_main(ctx: Context, user_id: int) -> None:
     await ctx.show_screen(user_id, t.MAIN_MENU, kb.main_menu())
+
+
+# ── Гейт обязательной подписки (ОП) ──────────────────────────
+async def show_gate(ctx: Context, user_id: int, *, force_new: bool = False) -> None:
+    channels = await ctx.db.list_required_channels()
+    await ctx.show_screen(user_id, t.GATE_TITLE, kb.gate(channels), force_new=force_new)
+
+
+async def handle_gate_check(ctx: Context, user_id: int, callback_id: str) -> None:
+    ok, _missing = await gate.recheck(ctx, user_id)
+    if ok:
+        await ctx.api.answer_callback(callback_id, notification="Спасибо за подписку! ✅")
+        await show_welcome(ctx, user_id)
+    else:
+        await ctx.api.answer_callback(callback_id, notification="Подписка не найдена — подпишись на все каналы")
+        await show_gate(ctx, user_id)
 
 
 # ── Роутер callback'ов меню ──────────────────────────────────
@@ -497,10 +514,12 @@ async def _settings(ctx: Context, user_id: int, parts: list[str], callback_id: s
 async def _help(ctx: Context, user_id: int, parts: list[str], callback_id: str) -> None:
     page = parts[1] if len(parts) > 1 else ""
     await ctx.api.answer_callback(callback_id)
+    if page == "support":
+        await ctx.show_screen(user_id, t.HELP_SUPPORT, kb.support(t.SUPPORT_URL))
+        return
     body = {
         "howto": t.HELP_HOWTO,
         "crystals": t.HELP_CRYSTALS,
-        "support": t.HELP_SUPPORT,
         "rules": t.HELP_RULES,
     }.get(page, t.HELP_ROOT)
     await ctx.show_screen(user_id, body, [[kb.cb("⬅️ Назад", "nav:help")]])

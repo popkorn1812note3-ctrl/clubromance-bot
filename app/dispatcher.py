@@ -4,8 +4,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from . import gate
 from . import keyboards as kb
 from . import menus, play
+from .max_client import MaxError
 from .runtime import Context
 
 log = logging.getLogger("dispatch")
@@ -40,6 +42,29 @@ async def dispatch(ctx: Context, update: dict[str, Any]) -> None:
         log.exception("ошибка обработки апдейта %s", update.get("update_type"))
 
 
+async def _gate_block(ctx: Context, uid: int) -> bool:
+    """True, если юзера нужно держать на гейте подписки (не админ и не прошёл)."""
+    if uid in ctx.admin_ids:
+        return False
+    return not await gate.passed(ctx, uid)
+
+
+async def _on_bot_added(ctx: Context, update: dict[str, Any]) -> None:
+    """Бота добавили в канал админом → регистрируем канал в гейте ОП."""
+    chat_id = update.get("chat_id")
+    if chat_id is None or not update.get("is_channel"):
+        return
+    title, link = "", ""
+    try:
+        chat = await ctx.api.get_chat(chat_id)
+        title = chat.get("title") or ""
+        link = chat.get("link") or ""
+    except MaxError as e:
+        log.warning("get_chat(%s) не удался: %s", chat_id, e)
+    await ctx.db.upsert_channel(chat_id, title, link)
+    log.info("Канал добавлен в гейт ОП: %s (chat_id=%s)", title or "?", chat_id)
+
+
 async def _dispatch(ctx: Context, update: dict[str, Any]) -> None:
     utype = update.get("update_type")
 
@@ -51,6 +76,9 @@ async def _dispatch(ctx: Context, update: dict[str, Any]) -> None:
         log.info("bot_started uid=%s payload=%s", uid, update.get("payload"))
         await ctx.db.ensure_user(uid, _full_name(user), user.get("username") or "")
         await _handle_referral(ctx, uid, update.get("payload"))
+        if await _gate_block(ctx, uid):
+            await menus.show_gate(ctx, uid, force_new=True)
+            return
         await menus.show_welcome(ctx, uid)
         return
 
@@ -63,6 +91,9 @@ async def _dispatch(ctx: Context, update: dict[str, Any]) -> None:
         await ctx.db.ensure_user(uid, _full_name(sender), sender.get("username") or "")
         text = ((msg.get("body", {}) or {}).get("text") or "").strip()
         log.info("message uid=%s text=%r", uid, text[:40])
+        if await _gate_block(ctx, uid):
+            await menus.show_gate(ctx, uid, force_new=True)
+            return
         await _on_text(ctx, uid, text)
         return
 
@@ -76,10 +107,20 @@ async def _dispatch(ctx: Context, update: dict[str, Any]) -> None:
             return
         log.info("callback uid=%s payload=%s", uid, payload)
         await ctx.db.ensure_user(uid, _full_name(user), user.get("username") or "")
+        if payload.startswith("gate:"):
+            await menus.handle_gate_check(ctx, uid, callback_id)
+            return
+        if await _gate_block(ctx, uid):
+            await ctx.api.answer_callback(callback_id)
+            await menus.show_gate(ctx, uid)
+            return
         await _on_callback(ctx, uid, payload, callback_id)
         return
 
-    # Прочие типы (bot_added, message_edited, ...) пока игнорируем.
+    if utype == "bot_added":
+        await _on_bot_added(ctx, update)
+        return
+
     log.debug("проигнорирован апдейт типа %s", utype)
 
 

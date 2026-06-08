@@ -206,6 +206,22 @@ def play_next(story_id: str) -> Keyboard:
     return [[cb("▶️ Дальше", f"pl:{story_id}:n")]]
 
 
+# ── Гейт обязательной подписки ───────────────────────────────
+def gate(channels: list[dict[str, Any]]) -> Keyboard:
+    kb: Keyboard = []
+    for ch in channels:
+        url = ch.get("link") or ""
+        title = ch.get("title") or "Наш канал"
+        if url:
+            kb.append([link(f"📢 {title}", url)])
+    kb.append([cb("✅ Я подписался", "gate:check")])
+    return kb
+
+
+def support(url: str) -> Keyboard:
+    return [[link("📨 Написать в поддержку", url)], back("nav:help")]
+
+
 def play_final(story_id: str) -> Keyboard:
     return [
         [cb("🔄 Пройти заново", f"st:restart_yes:{story_id}")],

@@ -61,6 +61,18 @@ class FakeApi:
         self.answers.append({"cb": callback_id, "notification": notification, "text": text})
         return {"ok": True}
 
+    # ── Каналы / гейт (для тестов ОП) ──
+    subscribed: set = set()
+
+    async def is_member(self, chat_id, user_id):
+        return (chat_id, user_id) in self.subscribed
+
+    async def get_chat(self, chat_id):
+        return {"title": f"Канал {chat_id}", "link": f"https://max.ru/ch{abs(chat_id)}"}
+
+    async def get_my_membership(self, chat_id):
+        return {"is_admin": True}
+
     async def close(self):
         pass
 

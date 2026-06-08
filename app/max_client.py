@@ -190,6 +190,27 @@ class MaxClient:
         body["notification"] = notification if notification is not None else " "
         return await self._request("POST", "/answers", params={"callback_id": callback_id}, json=body)
 
+    # ── Каналы / проверка подписки ────────────────────────────
+    async def get_chat(self, chat_id: int) -> dict[str, Any]:
+        """Инфо о чате/канале: title, link, participants_count, is_public, icon."""
+        return await self._request("GET", f"/chats/{chat_id}")
+
+    async def get_my_membership(self, chat_id: int) -> dict[str, Any]:
+        """Членство САМОГО бота в чате: is_owner, is_admin (для диагностики прав)."""
+        return await self._request("GET", f"/chats/{chat_id}/members/me")
+
+    async def is_member(self, chat_id: int, user_id: int) -> bool:
+        """Подписан ли user_id на канал. Бот должен быть АДМИНОМ канала.
+
+        ВАЖНО (грабля GiftBot): MAX может игнорировать фильтр user_ids и вернуть
+        произвольных участников — поэтому СВЕРЯЕМ user_id явно. Бросает ChatDenied,
+        если бот не админ канала (проверку провести нельзя)."""
+        data = await self._request(
+            "GET", f"/chats/{chat_id}/members", params={"user_ids": user_id}
+        )
+        members = data.get("members", []) if isinstance(data, dict) else []
+        return any(m.get("user_id") == user_id for m in members)
+
     # ── Webhook (subscriptions) ───────────────────────────────
     async def list_webhooks(self) -> list[dict[str, Any]]:
         data = await self._request("GET", "/subscriptions")
