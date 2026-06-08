@@ -9,6 +9,14 @@
 runtime.log
 runtime*.log
 *.err.log
+admin_local.log
+
+# Данные рантайма (загруженные картинки и пр.)
+data/
+
+# Артефакты браузерных проверок
+.playwright-mcp/
+admin-*.png
 
 # Python
 __pycache__/
