@@ -40,18 +40,25 @@ def achievement_catalog(ctx: Context) -> dict[str, dict[str, Any]]:
 
 
 # ── Точки входа ──────────────────────────────────────────────
+async def _img(ctx: Context, key: str):
+    """payload-картинка по ключу из БД (или None). Для меню/обложек."""
+    photos = await ctx.db.get_image(key)
+    return {"photos": photos} if photos else None
+
+
 async def show_welcome(ctx: Context, user_id: int) -> None:
     u = await ctx.db.ensure_user(user_id)
     await ctx.show_screen(
         user_id,
         t.WELCOME.format(crystals=u["crystals"], gem=GEM),
         kb.main_menu(),
+        image=await _img(ctx, "ui:main"),
         force_new=True,
     )
 
 
 async def show_main(ctx: Context, user_id: int) -> None:
-    await ctx.show_screen(user_id, t.MAIN_MENU, kb.main_menu())
+    await ctx.show_screen(user_id, t.MAIN_MENU, kb.main_menu(), image=await _img(ctx, "ui:main"))
 
 
 # ── Гейт обязательной подписки (ОП) ──────────────────────────
@@ -232,6 +239,7 @@ async def _story_card(ctx: Context, user_id: int, sid: str) -> None:
         user_id,
         "\n".join(lines),
         kb.story_card(story, unlocked=unlocked, has_progress=has_progress, completed=completed),
+        image=await _img(ctx, f"cover:{sid}"),
     )
 
 

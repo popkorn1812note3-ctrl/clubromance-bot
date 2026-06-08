@@ -249,6 +249,7 @@ def uploader(key: str, present: bool) -> str:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(_: str = Depends(auth)):
     c = ctx()
+    keys = await c.db.image_keys()
     st = await c.db.gate_stats()
     conv = f"{round(100 * st['passed'] / st['total'])}%" if st["total"] else "—"
     chips = (
@@ -287,7 +288,10 @@ async def dashboard(_: str = Depends(auth)):
         "<div class=hero><h1>Панель управления</h1>"
         "<p class=sub>Картинки историй и обязательная подписка</p>"
         f"<div class=chips>{chips}</div></div>"
-        "<section><div class=sec-head><h2>Истории</h2><span class=hint>картинки сцен</span></div>"
+        "<section><div class=sec-head><h2>Картинка главного меню</h2>"
+        "<span class=hint>показывается на экране меню и приветствия</span></div>"
+        f"<div class=card>{uploader('ui:main', 'ui:main' in keys)}</div></section>"
+        "<section><div class=sec-head><h2>Истории</h2><span class=hint>обложка + картинки сцен</span></div>"
         f"<div class=grid>{s_html}</div></section>"
         "<section><div class=sec-head><h2>Каналы обязательной подписки</h2></div>"
         f"{ch_rows}{add_ch}</section>"
@@ -383,7 +387,10 @@ async def story_page(sid: str, _: str = Depends(auth)):
     body = (
         "<a class=back href='/'>← К историям</a>"
         f"<div class=hero><h1>{esc(story.cover)} {esc(story.title)}</h1>"
-        "<p class=sub>Фоны по локациям и картинки к ключевым сценам</p></div>"
+        "<p class=sub>Обложка, фоны по локациям и картинки к ключевым сценам</p></div>"
+        "<section><div class=sec-head><h2>Обложка / превью истории</h2>"
+        "<span class=hint>показывается на карточке истории в боте</span></div>"
+        f"<div class=card>{uploader(f'cover:{sid}', f'cover:{sid}' in keys)}</div></section>"
         "<section><div class=sec-head><h2>Фоны по локациям</h2>"
         "<span class=hint>одна картинка на место</span></div>"
         f"<div class=grid>{loc_html}</div></section>"
@@ -396,6 +403,14 @@ async def story_page(sid: str, _: str = Depends(auth)):
 
 def _safe_name(key: str) -> str:
     return key.replace(":", "__").replace("/", "_")
+
+
+def _redirect_for(key: str) -> str:
+    """Куда вернуться после загрузки/удаления по ключу картинки."""
+    parts = key.split(":")
+    if parts[0] in ("bg", "scene", "cover") and len(parts) > 1:
+        return f"/story/{parts[1]}"
+    return "/"  # ui:* и прочее — на главную
 
 
 @app.post("/upload")
@@ -415,8 +430,7 @@ async def upload(key: str = Form(...), file: UploadFile = None, _: str = Depends
                               "<p><a class=back href='/'>← назад</a></p>")
     await ctx().db.set_image(key, photos)
     (UPLOAD_DIR / _safe_name(key)).write_bytes(data)
-    sid = key.split(":")[1] if ":" in key else ""
-    return RedirectResponse(f"/story/{sid}" if sid else "/", status_code=303)
+    return RedirectResponse(_redirect_for(key), status_code=303)
 
 
 @app.post("/img/delete")
@@ -425,8 +439,7 @@ async def img_delete(key: str = Form(...), _: str = Depends(auth)):
     p = UPLOAD_DIR / _safe_name(key)
     if p.exists():
         p.unlink()
-    sid = key.split(":")[1] if ":" in key else ""
-    return RedirectResponse(f"/story/{sid}" if sid else "/", status_code=303)
+    return RedirectResponse(_redirect_for(key), status_code=303)
 
 
 @app.get("/preview/{key}")
