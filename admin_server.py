@@ -539,7 +539,8 @@ async def preview(key: str, _: str = Depends(auth)):
     p = UPLOAD_DIR / _safe_name(key)
     if not p.exists():
         raise HTTPException(404)
-    return FileResponse(p)
+    # no-store: после замены картинки админка показывает свежее фото, а не кеш браузера.
+    return FileResponse(p, headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
 
 
 @app.post("/channels/add")
