@@ -263,7 +263,8 @@ def uploader(key: str, present: bool) -> str:
         thumb = f"<img class=thumb src='/preview/{esc(key)}'>"
         pill = "<span class='pill ok'>● загружено</span>"
         delete = (
-            f"<form method=post action='/img/delete'>"
+            f"<form method=post action='/img/delete' "
+            f"data-confirm='Удалить эту картинку? Её придётся загружать заново.'>"
             f"<input type=hidden name=key value='{esc(key)}'>"
             f"<button class='btn danger sm'>Удалить</button></form>"
         )
