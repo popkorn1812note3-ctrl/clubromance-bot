@@ -15,6 +15,7 @@ from app.bootstrap import build_context, setup_logging
 from app.config import load_config
 from app.dispatcher import dispatch
 from app.max_client import TransientError
+from app.tasks import retention_loop
 
 log = logging.getLogger("run")
 
@@ -37,6 +38,9 @@ async def main() -> None:
                 await ctx.api.delete_webhook(url)
     except Exception as e:  # noqa: BLE001
         log.warning("Не удалось проверить подписки: %s", e)
+
+    # Фоновый отзыв награды за подписку у отписавшихся (раз в час).
+    asyncio.create_task(retention_loop(ctx))
 
     log.info("🚀 ClubRomance запущен (polling). Ctrl+C для остановки.")
     marker: int | None = None

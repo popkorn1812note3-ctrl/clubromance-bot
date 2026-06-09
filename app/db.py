@@ -41,7 +41,9 @@ CREATE TABLE IF NOT EXISTS channels (
     chat_id   INTEGER PRIMARY KEY,
     title     TEXT,
     link      TEXT,
-    required  INTEGER NOT NULL DEFAULT 1,
+    required  INTEGER NOT NULL DEFAULT 1,   -- 1 = канал обязательной подписки (гейт)
+    reward    INTEGER NOT NULL DEFAULT 0,   -- >0 = канал-задание «подписка за награду»
+    hold_days INTEGER NOT NULL DEFAULT 0,   -- сколько дней держать подписку, иначе отзыв награды
     added_at  INTEGER NOT NULL
 );
 
@@ -102,6 +104,17 @@ CREATE TABLE IF NOT EXISTS referrals (
     at         INTEGER NOT NULL,
     PRIMARY KEY (inviter_id, invited_id)
 );
+
+CREATE TABLE IF NOT EXISTS subscription_claims (
+    user_id    INTEGER NOT NULL,
+    chat_id    INTEGER NOT NULL,
+    reward     INTEGER NOT NULL,
+    status     TEXT    NOT NULL DEFAULT 'active',   -- active | revoked
+    claimed_at INTEGER NOT NULL,
+    check_at   INTEGER NOT NULL DEFAULT 0,          -- когда проверить удержание (0 = не проверять)
+    revoked_at INTEGER,
+    PRIMARY KEY (user_id, chat_id)
+);
 """
 
 
@@ -124,15 +137,24 @@ class DB:
         await self._conn.commit()
 
     async def _migrate(self) -> None:
-        """Лёгкие миграции для уже существующих БД (без Alembic)."""
-        cur = await self._conn.execute("PRAGMA table_info(users)")
-        cols = {r["name"] for r in await cur.fetchall()}
-        if "pending" not in cols:
+        """Лёгкие миграции для уже существующих БД (без Alembic): доливаем недостающие колонки."""
+        async def table_cols(table: str) -> set[str]:
+            cur = await self._conn.execute(f"PRAGMA table_info({table})")
+            return {r["name"] for r in await cur.fetchall()}
+
+        ucols = await table_cols("users")
+        if "pending" not in ucols:
             await self._conn.execute("ALTER TABLE users ADD COLUMN pending TEXT")
-        if "gate_passed" not in cols:
+        if "gate_passed" not in ucols:
             await self._conn.execute("ALTER TABLE users ADD COLUMN gate_passed INTEGER NOT NULL DEFAULT 0")
-        if "gate_checked_at" not in cols:
+        if "gate_checked_at" not in ucols:
             await self._conn.execute("ALTER TABLE users ADD COLUMN gate_checked_at INTEGER NOT NULL DEFAULT 0")
+
+        chcols = await table_cols("channels")
+        if "reward" not in chcols:
+            await self._conn.execute("ALTER TABLE channels ADD COLUMN reward INTEGER NOT NULL DEFAULT 0")
+        if "hold_days" not in chcols:
+            await self._conn.execute("ALTER TABLE channels ADD COLUMN hold_days INTEGER NOT NULL DEFAULT 0")
 
     async def close(self) -> None:
         if self._conn:
@@ -370,6 +392,108 @@ class DB:
                 "SELECT COUNT(*) FROM users WHERE gate_passed=1 AND created_at>=?", now - 86400),
             "week_passed": await one(
                 "SELECT COUNT(*) FROM users WHERE gate_passed=1 AND created_at>=?", now - 7 * 86400),
+        }
+
+    # ── Каналы-задания «подписка за награду» ──────────────────
+    async def upsert_reward_channel(
+        self, chat_id: int, title: str = "", link: str = "", reward: int = 0, hold_days: int = 0
+    ) -> None:
+        """Добавить/обновить канал-задание (required=0, не трогает гейт ОП)."""
+        await self.conn.execute(
+            """INSERT INTO channels (chat_id, title, link, required, reward, hold_days, added_at)
+               VALUES (?,?,?,0,?,?,?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+                   title=COALESCE(NULLIF(excluded.title,''), channels.title),
+                   link=COALESCE(NULLIF(excluded.link,''), channels.link),
+                   required=0,
+                   reward=excluded.reward,
+                   hold_days=excluded.hold_days""",
+            (chat_id, title, link, max(0, int(reward)), max(0, int(hold_days)), _now()),
+        )
+        await self.conn.commit()
+
+    async def list_reward_channels(self) -> list[dict[str, Any]]:
+        cur = await self.conn.execute("SELECT * FROM channels WHERE reward>0 ORDER BY added_at")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_channel(self, chat_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM channels WHERE chat_id=?", (chat_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def subscription_claim(self, user_id: int, chat_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute(
+            "SELECT * FROM subscription_claims WHERE user_id=? AND chat_id=?", (user_id, chat_id)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_user_claims(self, user_id: int) -> list[dict[str, Any]]:
+        cur = await self.conn.execute(
+            "SELECT * FROM subscription_claims WHERE user_id=? ORDER BY claimed_at DESC", (user_id,)
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def grant_subscription(self, user_id: int, chat_id: int, reward: int, hold_days: int) -> tuple[bool, int]:
+        """Начислить награду за подписку + записать claim. (начислено?, баланс).
+        Идемпотентно: если выдача уже была (active|revoked) — повторно не даёт."""
+        if await self.subscription_claim(user_id, chat_id):
+            u = await self.get_user(user_id)
+            return False, int(u["crystals"]) if u else 0
+        check_at = _now() + int(hold_days) * 86400 if hold_days and hold_days > 0 else 0
+        await self.conn.execute(
+            """INSERT INTO subscription_claims (user_id, chat_id, reward, status, claimed_at, check_at)
+               VALUES (?,?,?, 'active', ?, ?)""",
+            (user_id, chat_id, int(reward), _now(), check_at),
+        )
+        bal = await self.add_crystals(user_id, int(reward), "subscribe", f"sub:{chat_id}")
+        return True, bal
+
+    async def list_due_claims(self, now: int, limit: int = 500) -> list[dict[str, Any]]:
+        """Активные выдачи, которым пора проверить удержание (check_at наступил)."""
+        cur = await self.conn.execute(
+            """SELECT * FROM subscription_claims
+               WHERE status='active' AND check_at>0 AND check_at<=?
+               ORDER BY check_at LIMIT ?""",
+            (now, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def mark_claim_kept(self, user_id: int, chat_id: int) -> None:
+        """Удержал срок подписки → больше не проверяем (награда закреплена)."""
+        await self.conn.execute(
+            "UPDATE subscription_claims SET check_at=0 WHERE user_id=? AND chat_id=?", (user_id, chat_id)
+        )
+        await self.conn.commit()
+
+    async def revoke_subscription(self, user_id: int, chat_id: int) -> int:
+        """Отозвать награду (юзер отписался). Списывает не ниже нуля. Возвращает списанное."""
+        claim = await self.subscription_claim(user_id, chat_id)
+        if not claim or claim["status"] != "active":
+            return 0
+        u = await self.get_user(user_id)
+        bal = int(u["crystals"]) if u else 0
+        take = min(int(claim["reward"]), bal)  # в минус не уводим
+        if take > 0:
+            await self.add_crystals(user_id, -take, "revoke", f"sub_revoke:{chat_id}")
+        await self.conn.execute(
+            "UPDATE subscription_claims SET status='revoked', revoked_at=?, check_at=0 WHERE user_id=? AND chat_id=?",
+            (_now(), user_id, chat_id),
+        )
+        await self.conn.commit()
+        return take
+
+    async def subscription_summary(self) -> dict[int, dict[str, int]]:
+        """По каждому каналу-заданию: сколько выдач active / revoked (для админки)."""
+        cur = await self.conn.execute(
+            """SELECT chat_id,
+                      SUM(CASE WHEN status='active'  THEN 1 ELSE 0 END) AS active,
+                      SUM(CASE WHEN status='revoked' THEN 1 ELSE 0 END) AS revoked
+               FROM subscription_claims GROUP BY chat_id"""
+        )
+        return {
+            int(r["chat_id"]): {"active": int(r["active"] or 0), "revoked": int(r["revoked"] or 0)}
+            for r in await cur.fetchall()
         }
 
     # ── Картинки сцен (фоны по локациям + override сцен) ──────

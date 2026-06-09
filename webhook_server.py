@@ -21,6 +21,7 @@ from app.bootstrap import build_context, setup_logging
 from app.config import load_config
 from app.dispatcher import dispatch
 from app.runtime import Context
+from app.tasks import retention_loop
 
 log = logging.getLogger("webhook")
 
@@ -58,8 +59,12 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("WEBHOOK_BASE_URL не задан — подписка не зарегистрирована (зарегистрируйте вручную).")
 
+    # Фоновый отзыв награды за подписку у отписавшихся (раз в час).
+    retention_task = asyncio.create_task(retention_loop(_ctx))
+
     yield
 
+    retention_task.cancel()
     await _ctx.api.close()
     await _ctx.db.close()
 

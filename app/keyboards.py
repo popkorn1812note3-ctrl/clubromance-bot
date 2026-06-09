@@ -109,10 +109,37 @@ def crystals_menu() -> Keyboard:
 def free_menu() -> Keyboard:
     return [
         [cb("📅 Ежедневная награда", "free:daily")],
-        [cb("📣 Подписаться на канал", "free:sub")],
+        [cb("📣 Подписки за награду", "free:sub")],
         [cb("👥 Пригласить друга", "free:invite")],
         back("nav:crystals"),
     ]
+
+
+# ── Подписки за награду ──────────────────────────────────────
+def subs_menu(channels: list[dict[str, Any]], claims: dict[int, dict[str, Any]]) -> Keyboard:
+    """Список каналов-заданий. Полученные/отозванные — без перехода (ведут на список)."""
+    kb: Keyboard = []
+    for ch in channels:
+        title = ch.get("title") or "Канал"
+        c = claims.get(ch["chat_id"])
+        if c and c["status"] == "active":
+            kb.append([cb(f"✅ {title} · получено", "free:sub")])
+        elif c and c["status"] == "revoked":
+            kb.append([cb(f"↩️ {title} · отозвано", "free:sub")])
+        else:
+            kb.append([cb(f"📣 {title} · +{ch['reward']}{GEM}", f"free:sub:{ch['chat_id']}")])
+    kb.append(back("nav:free"))
+    return kb
+
+
+def sub_one(ch: dict[str, Any]) -> Keyboard:
+    """Экран одного задания: открыть канал + проверить подписку."""
+    rows: Keyboard = []
+    if ch.get("link"):
+        rows.append([link(f"📢 Открыть «{ch.get('title') or 'канал'}»", ch["link"])])
+    rows.append([cb("✅ Проверить подписку", f"free:sub:{ch['chat_id']}")])
+    rows.append(back("free:sub", "⬅️ К заданиям"))
+    return rows
 
 
 def buy_menu() -> Keyboard:

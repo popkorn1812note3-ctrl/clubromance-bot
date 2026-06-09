@@ -334,7 +334,7 @@ async def _screen_free(ctx: Context, user_id: int) -> None:
     body = (
         t.FREE_TITLE.format(bal=bal, gem=GEM)
         + f"\n\n📅 Ежедневно: +{REWARD_DAILY} {GEM}"
-        + f"\n📣 Подписка на канал: +{REWARD_SUBSCRIBE} {GEM}"
+        + "\n📣 Подписки за награду: кристаллы за подписку на каналы"
         + f"\n👥 Друг по приглашению: +{REWARD_INVITE} {GEM}"
     )
     await ctx.show_screen(user_id, body, kb.free_menu())
@@ -351,17 +351,12 @@ async def _free(ctx: Context, user_id: int, parts: list[str], callback_id: str) 
             await ctx.show_screen(user_id, f"📅 Сегодня награда уже получена.\nСледующая — через *{_fmt_dur(wait)}*.\nБаланс: *{bal}* {GEM}", kb.free_menu())
         return
     if source == "sub":
-        ok, bal = await ctx.db.claim_subscribe(user_id, REWARD_SUBSCRIBE)
-        await ctx.api.answer_callback(callback_id)
-        if ok:
-            await ctx.show_screen(
-                user_id,
-                f"📣 +{REWARD_SUBSCRIBE} {GEM} за подписку!\nБаланс: *{bal}* {GEM}\n\n"
-                "_(Реальную проверку подписки на канал подключим, когда бот станет админом канала.)_",
-                kb.free_menu(),
-            )
+        chat_id = parts[2] if len(parts) > 2 else ""
+        if chat_id:
+            await _claim_sub(ctx, user_id, chat_id, callback_id)
         else:
-            await ctx.show_screen(user_id, f"📣 Бонус за подписку уже был получен ранее.\nБаланс: *{bal}* {GEM}", kb.free_menu())
+            await ctx.api.answer_callback(callback_id)
+            await _screen_subs(ctx, user_id)
         return
     if source == "invite":
         await ctx.api.answer_callback(callback_id)
@@ -375,6 +370,81 @@ async def _free(ctx: Context, user_id: int, parts: list[str], callback_id: str) 
         )
         return
     await ctx.api.answer_callback(callback_id)
+
+
+# ── Подписки за награду ──────────────────────────────────────
+async def _screen_subs(ctx: Context, user_id: int) -> None:
+    channels = await ctx.db.list_reward_channels()
+    if not channels:
+        await ctx.show_screen(
+            user_id,
+            "📣 *Подписки за награду*\n\nСейчас активных заданий нет — загляни позже!",
+            [[kb.cb("⬅️ Назад", "nav:free")]],
+        )
+        return
+    claims = {c["chat_id"]: c for c in await ctx.db.list_user_claims(user_id)}
+    lines = [
+        "📣 *Подписки за награду*", "",
+        "Подпишись на канал и забери кристаллы. Награда закрепится, если останешься "
+        "подписан; отпишешься — её заберут обратно.", "",
+    ]
+    for ch in channels:
+        title = esc(ch["title"] or "Канал")
+        c = claims.get(ch["chat_id"])
+        if c and c["status"] == "active":
+            lines.append(f"✅ {title} — получено (+{c['reward']} {GEM})")
+        elif c and c["status"] == "revoked":
+            lines.append(f"↩️ {title} — награда отозвана")
+        else:
+            hold = ch["hold_days"]
+            tail = f" · держать {hold} дн." if hold and hold > 0 else ""
+            lines.append(f"📣 {title} — *+{ch['reward']}* {GEM}{tail}")
+    await ctx.show_screen(user_id, "\n".join(lines), kb.subs_menu(channels, claims))
+
+
+async def _screen_sub_one(ctx: Context, user_id: int, ch: dict[str, Any]) -> None:
+    title = esc(ch["title"] or "Канал")
+    hold = ch["hold_days"]
+    tail = f"\n\n_Оставайся подписан минимум {hold} дн. — иначе награду заберут._" if hold and hold > 0 else ""
+    await ctx.show_screen(
+        user_id,
+        f"📣 *{title}*\n\nПодпишись на канал и получи *+{ch['reward']}* {GEM}.\n\n"
+        f"1. Открой канал по кнопке.\n2. Вернись и нажми «✅ Проверить подписку».{tail}",
+        kb.sub_one(ch),
+    )
+
+
+async def _claim_sub(ctx: Context, user_id: int, chat_id_str: str, callback_id: str) -> None:
+    try:
+        chat_id = int(chat_id_str)
+    except ValueError:
+        await ctx.api.answer_callback(callback_id)
+        return
+    ch = await ctx.db.get_channel(chat_id)
+    if not ch or int(ch.get("reward", 0)) <= 0:
+        await ctx.api.answer_callback(callback_id, notification="Задание не найдено")
+        await _screen_subs(ctx, user_id)
+        return
+    existing = await ctx.db.subscription_claim(user_id, chat_id)
+    if existing:
+        msg = ("Награду за этот канал ты уже получил" if existing["status"] == "active"
+               else "Награда была отозвана — повторно недоступно")
+        await ctx.api.answer_callback(callback_id, notification=msg)
+        await _screen_subs(ctx, user_id)
+        return
+    sub = await gate.is_subscribed(ctx, chat_id, user_id)
+    if sub is None:
+        await ctx.api.answer_callback(callback_id, notification="Не удалось проверить подписку, попробуй позже")
+        await _screen_sub_one(ctx, user_id, ch)
+        return
+    if not sub:
+        await ctx.api.answer_callback(callback_id, notification="Подписка не найдена — подпишись и нажми «Проверить»")
+        await _screen_sub_one(ctx, user_id, ch)
+        return
+    granted, bal = await ctx.db.grant_subscription(user_id, chat_id, int(ch["reward"]), int(ch["hold_days"]))
+    note = f"+{ch['reward']} 💎 за подписку!" if granted else "Награда уже была получена"
+    await ctx.api.answer_callback(callback_id, notification=note)
+    await _screen_subs(ctx, user_id)
 
 
 async def _buy(ctx: Context, user_id: int, parts: list[str], callback_id: str) -> None:
@@ -402,6 +472,7 @@ async def _screen_history(ctx: Context, user_id: int) -> None:
     names = {
         "grant": "Бонус", "daily": "Ежедневная", "subscribe": "Подписка",
         "invite": "Реферал", "spend": "Списание", "buy": "Покупка",
+        "achievement": "Достижение", "revoke": "Отзыв награды",
     }
     lines = ["📊 *История операций*", ""]
     for r in rows:

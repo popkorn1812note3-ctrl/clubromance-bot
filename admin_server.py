@@ -247,7 +247,7 @@ def page(title: str, body: str, active: str = "") -> HTMLResponse:
         "<div class=topbar><div class=bar>"
         "<a class=brand href='/'><span class=logo>♥</span> <span class=nm>Club Romance</span> "
         "<span class=badge-soft>admin</span></a>"
-        f"<nav class=nav>{nav('/', 'Главная', 'home')}{nav('/users', 'Пользователи', 'users')}{nav('/stats', 'Статистика', 'stats')}</nav>"
+        f"<nav class=nav>{nav('/', 'Главная', 'home')}{nav('/users', 'Пользователи', 'users')}{nav('/subs', 'Задания', 'subs')}{nav('/stats', 'Статистика', 'stats')}</nav>"
         "</div></div>"
     )
     return HTMLResponse(
@@ -553,6 +553,88 @@ async def channel_add(chat_id: int = Form(...), title: str = Form(""), link: str
 async def channel_delete(chat_id: int, _: str = Depends(auth)):
     await ctx().db.remove_channel(chat_id)
     return RedirectResponse("/", status_code=303)
+
+
+# ── Подписки за награду (каналы-задания) ─────────────────────
+@app.get("/subs", response_class=HTMLResponse)
+async def subs_page(_: str = Depends(auth)):
+    c = ctx()
+    channels = await c.db.list_reward_channels()
+    summary = await c.db.subscription_summary()
+
+    rows = ""
+    for ch in channels:
+        cid = ch["chat_id"]
+        admin = False
+        try:
+            me = await c.api.get_my_membership(cid)
+            admin = bool(me.get("is_admin") or me.get("is_owner"))
+        except Exception:  # noqa: BLE001
+            admin = False
+        badge = ("<span class='pill ok'>✓ бот админ</span>" if admin
+                 else "<span class='pill warn'>⚠ бот не админ — награду не выдать</span>")
+        s = summary.get(cid, {"active": 0, "revoked": 0})
+        rows += (
+            f"<div class=card><div class=chrow><div>"
+            f"<b>📣 {esc(ch['title'] or 'Канал')}</b> <span class=tag>{cid}</span>"
+            f"<div class=muted>{esc(ch['link'] or 'без ссылки')}</div>"
+            f"<div class=muted>выдано: {s['active']} · отозвано: {s['revoked']}</div></div>"
+            f"<div>{badge}</div></div>"
+            f"<form method=post action='/subs/add' class=field style='margin-top:12px'>"
+            f"<input type=hidden name=chat_id value='{cid}'>"
+            f"<input type=hidden name=title value='{esc(ch['title'] or '')}'>"
+            f"<input type=hidden name=link value='{esc(ch['link'] or '')}'>"
+            f"<label class=check>Награда {esc('💎')}<input type=number name=reward value='{ch['reward']}' min='0' style='max-width:100px'></label>"
+            f"<label class=check>Держать дней<input type=number name=hold_days value='{ch['hold_days']}' min='0' style='max-width:100px'></label>"
+            f"<button class='btn ghost sm'>Сохранить</button></form>"
+            f"<form method=post action='/subs/{cid}/delete' data-confirm='Удалить задание? Уже выданные награды останутся у игроков.' style='margin-top:8px'>"
+            f"<button class='btn danger sm'>Удалить задание</button></form></div>"
+        )
+    if not channels:
+        rows = "<div class=empty>Заданий нет. Добавь канал ниже — игроки будут получать кристаллы за подписку.</div>"
+
+    add = (
+        "<form method=post action='/subs/add' class=card style='margin-top:14px'>"
+        "<div class=field><input type=number name=chat_id placeholder='chat_id канала (напр. -7488…)' required>"
+        "<input type=text name=title placeholder='Название канала'></div>"
+        "<div class=field><input type=text name=link placeholder='https://max.ru/...'>"
+        "<input type=number name=reward value='15' min='0' placeholder='Награда 💎' style='max-width:150px'>"
+        "<input type=number name=hold_days value='7' min='0' placeholder='Держать дней' style='max-width:150px'>"
+        "<button class='btn primary'>Добавить задание</button></div>"
+        "<div class=muted>Чтобы проверка подписки работала, бот должен быть <b>админом</b> канала. "
+        "«Держать дней» — через сколько дней проверим, не отписался ли игрок (0 — награду не отзывать).</div></form>"
+    )
+
+    body = (
+        "<a class=back href='/'>← На главную</a>"
+        "<div class=hero><h1>Подписки за награду</h1>"
+        "<p class=sub>Игрок подписывается на канал → получает кристаллы. Отпишется в срок удержания → награду заберём</p></div>"
+        f"<section><div class=sec-head><h2>Каналы-задания</h2>"
+        "<span class=hint>награда и срок удержания настраиваются на каждый канал</span></div>"
+        f"{rows}{add}</section>"
+    )
+    return page("Задания — подписки за награду", body, "subs")
+
+
+@app.post("/subs/add")
+async def subs_add(
+    chat_id: int = Form(...),
+    title: str = Form(""),
+    link: str = Form(""),
+    reward: int = Form(0),
+    hold_days: int = Form(0),
+    _: str = Depends(auth),
+):
+    await ctx().db.upsert_reward_channel(
+        chat_id, title.strip(), link.strip(), max(0, reward), max(0, hold_days)
+    )
+    return RedirectResponse("/subs", status_code=303)
+
+
+@app.post("/subs/{chat_id}/delete")
+async def subs_delete(chat_id: int, _: str = Depends(auth)):
+    await ctx().db.remove_channel(chat_id)
+    return RedirectResponse("/subs", status_code=303)
 
 
 # ── Пользователи ─────────────────────────────────────────────

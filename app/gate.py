@@ -61,3 +61,16 @@ async def recheck(ctx: Context, user_id: int) -> tuple[bool, list[dict]]:
     ok, missing = await _verify_all(ctx, user_id)
     await ctx.db.set_gate_passed(user_id, 1 if ok else 0)
     return ok, missing
+
+
+async def is_subscribed(ctx: Context, chat_id: int, user_id: int) -> bool | None:
+    """Подписан ли юзер на конкретный канал-задание.
+    True — подписан, False — нет, None — проверить нельзя (бот не админ / ошибка API)."""
+    try:
+        return await ctx.api.is_member(chat_id, user_id)
+    except ChatDenied:
+        log.warning("канал %s: бот не админ — подписку не проверить", chat_id)
+        return None
+    except MaxError as e:
+        log.warning("канал %s: ошибка проверки подписки: %s", chat_id, e)
+        return None
