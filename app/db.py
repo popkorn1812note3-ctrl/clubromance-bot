@@ -213,11 +213,21 @@ class DB:
         return int(u["crystals"]) if u else 0
 
     async def spend_crystals(self, user_id: int, amount: int, type_: str = "spend", meta: str = "") -> bool:
-        """Атомарное списание. False, если не хватает баланса."""
-        u = await self.get_user(user_id)
-        if not u or u["crystals"] < amount:
+        """Атомарное списание одним условным UPDATE (без гонки check-then-act).
+        False, если не хватает баланса."""
+        amount = abs(int(amount))
+        cur = await self.conn.execute(
+            "UPDATE users SET crystals = crystals - ? WHERE user_id=? AND crystals >= ?",
+            (amount, user_id, amount),
+        )
+        if cur.rowcount == 0:  # юзера нет или не хватило баланса
+            await self.conn.commit()
             return False
-        await self.add_crystals(user_id, -abs(amount), type_, meta)
+        await self.conn.execute(
+            "INSERT INTO ledger (user_id, type, amount, meta, created_at) VALUES (?,?,?,?,?)",
+            (user_id, type_, -amount, meta, _now()),
+        )
+        await self.conn.commit()
         return True
 
     async def adjust_crystals(self, user_id: int, delta: int, meta: str = "admin") -> int:
@@ -441,11 +451,18 @@ class DB:
             u = await self.get_user(user_id)
             return False, int(u["crystals"]) if u else 0
         check_at = _now() + int(hold_days) * 86400 if hold_days and hold_days > 0 else 0
-        await self.conn.execute(
+        # ON CONFLICT DO NOTHING + rowcount: при гонке (двойной тап) второй вызов
+        # не вставит дубль и НЕ начислит повторно.
+        cur = await self.conn.execute(
             """INSERT INTO subscription_claims (user_id, chat_id, reward, status, claimed_at, check_at)
-               VALUES (?,?,?, 'active', ?, ?)""",
+               VALUES (?,?,?, 'active', ?, ?)
+               ON CONFLICT(user_id, chat_id) DO NOTHING""",
             (user_id, chat_id, int(reward), _now(), check_at),
         )
+        if cur.rowcount == 0:  # кто-то успел раньше — награду уже выдали
+            await self.conn.commit()
+            u = await self.get_user(user_id)
+            return False, int(u["crystals"]) if u else 0
         bal = await self.add_crystals(user_id, int(reward), "subscribe", f"sub:{chat_id}")
         return True, bal
 
@@ -463,6 +480,15 @@ class DB:
         """Удержал срок подписки → больше не проверяем (награда закреплена)."""
         await self.conn.execute(
             "UPDATE subscription_claims SET check_at=0 WHERE user_id=? AND chat_id=?", (user_id, chat_id)
+        )
+        await self.conn.commit()
+
+    async def defer_claim_check(self, user_id: int, chat_id: int, next_at: int) -> None:
+        """Отложить проверку удержания (когда подписку нельзя проверить — бот не админ/
+        канал удалён). Бэк-офф, чтобы не дёргать API каждый проход."""
+        await self.conn.execute(
+            "UPDATE subscription_claims SET check_at=? WHERE user_id=? AND chat_id=? AND status='active'",
+            (int(next_at), user_id, chat_id),
         )
         await self.conn.commit()
 

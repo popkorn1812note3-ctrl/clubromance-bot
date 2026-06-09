@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import secrets
@@ -77,6 +78,15 @@ def fmt_ts(ts, empty: str = "—") -> str:
     if not ts:
         return empty
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+async def _api_call(coro, *, timeout: float = 4.0):
+    """Вызов MAX API с жёстким таймаутом — чтобы страница админки не висела на
+    медленном/недоступном API (проверка бот-админ по каждому каналу). None при ошибке."""
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ── Дизайн-система ───────────────────────────────────────────
@@ -359,16 +369,10 @@ async def stats_page(_: str = Depends(auth)):
 
     ch_html = ""
     for ch in channels:
-        size, admin = "?", False
-        try:
-            size = (await c.api.get_chat(ch["chat_id"])).get("participants_count", "?")
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            me = await c.api.get_my_membership(ch["chat_id"])
-            admin = bool(me.get("is_admin") or me.get("is_owner"))
-        except Exception:  # noqa: BLE001
-            admin = False
+        chat = await _api_call(c.api.get_chat(ch["chat_id"]))
+        size = chat.get("participants_count", "?") if chat else "?"
+        me = await _api_call(c.api.get_my_membership(ch["chat_id"]))
+        admin = bool(me and (me.get("is_admin") or me.get("is_owner")))
         badge = ("<span class='pill ok'>✓ бот админ — проверка работает</span>" if admin
                  else "<span class='pill warn'>⚠ бот не админ — подписку не проверить</span>")
         ch_html += (f"<div class=card><div class=chrow><div><b>📢 {esc(ch['title'] or 'Канал')}</b> "
@@ -494,7 +498,8 @@ async def story_page(sid: str, _: str = Depends(auth)):
 
 
 def _safe_name(key: str) -> str:
-    return key.replace(":", "__").replace("/", "_")
+    # Чистим все разделители путей и «..», чтобы ключ не вышел за UPLOAD_DIR.
+    return (key.replace(":", "__").replace("/", "_").replace("\\", "_").replace("..", "_"))
 
 
 def _redirect_for(key: str) -> str:
@@ -536,8 +541,10 @@ async def img_delete(key: str = Form(...), _: str = Depends(auth)):
 
 @app.get("/preview/{key}")
 async def preview(key: str, _: str = Depends(auth)):
-    p = UPLOAD_DIR / _safe_name(key)
-    if not p.exists():
+    base = UPLOAD_DIR.resolve()
+    p = (base / _safe_name(key)).resolve()
+    # Защита от выхода за каталог загрузок (path traversal).
+    if not p.is_relative_to(base) or not p.is_file():
         raise HTTPException(404)
     # no-store: после замены картинки админка показывает свежее фото, а не кеш браузера.
     return FileResponse(p, headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
@@ -565,12 +572,8 @@ async def subs_page(_: str = Depends(auth)):
     rows = ""
     for ch in channels:
         cid = ch["chat_id"]
-        admin = False
-        try:
-            me = await c.api.get_my_membership(cid)
-            admin = bool(me.get("is_admin") or me.get("is_owner"))
-        except Exception:  # noqa: BLE001
-            admin = False
+        me = await _api_call(c.api.get_my_membership(cid))
+        admin = bool(me and (me.get("is_admin") or me.get("is_owner")))
         badge = ("<span class='pill ok'>✓ бот админ</span>" if admin
                  else "<span class='pill warn'>⚠ бот не админ — награду не выдать</span>")
         s = summary.get(cid, {"active": 0, "revoked": 0})

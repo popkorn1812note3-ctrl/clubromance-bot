@@ -17,21 +17,27 @@ from .runtime import Context
 log = logging.getLogger("tasks")
 
 RETENTION_INTERVAL = 3600  # как часто сканировать «созревшие» выдачи (сек)
+RETENTION_BATCH = 500      # сколько выдач проверяем за один проход
+RETENTION_BACKOFF = 86400  # на сколько откладываем проверку, если её нельзя выполнить (сек)
 
 
 async def retention_sweep(ctx: Context) -> int:
     """Один проход проверки удержания. Возвращает число отозванных наград."""
     now = int(time.time())
-    due = await ctx.db.list_due_claims(now)
+    due = await ctx.db.list_due_claims(now, RETENTION_BATCH)
     if not due:
         return 0
+    if len(due) >= RETENTION_BATCH:
+        log.warning("retention: упёрлись в лимит %d — остальные на следующий проход", RETENTION_BATCH)
     log.info("retention: к проверке %d выдач", len(due))
     revoked = 0
     for claim in due:
         uid, chat_id = claim["user_id"], claim["chat_id"]
         sub = await gate.is_subscribed(ctx, chat_id, uid)
         if sub is None:
-            continue  # не смогли проверить (бот не админ/ошибка) — оставим на следующий проход
+            # проверить нельзя (бот не админ / канал удалён) — откладываем, чтобы не дёргать API каждый час
+            await ctx.db.defer_claim_check(uid, chat_id, now + RETENTION_BACKOFF)
+            continue
         if sub:
             await ctx.db.mark_claim_kept(uid, chat_id)  # удержал срок → награда закреплена
             continue
