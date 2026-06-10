@@ -192,6 +192,11 @@ async def _story(ctx: Context, user_id: int, parts: list[str], callback_id: str)
         await _story_intro(ctx, user_id, story)
         return
 
+    if action == "rel":
+        await ctx.api.answer_callback(callback_id)
+        await _screen_relations(ctx, user_id, story)
+        return
+
     if action == "name":
         await ctx.db.update_user(user_id, pending=f"name:{sid}")
         await ctx.api.answer_callback(callback_id)
@@ -209,6 +214,45 @@ async def _story(ctx: Context, user_id: int, parts: list[str], callback_id: str)
         return
 
     await ctx.api.answer_callback(callback_id)
+
+
+async def _screen_relations(ctx: Context, user_id: int, story: Any) -> None:
+    """Экран «❤️ Отношения»: сердечки по романтическим линиям текущего прохождения."""
+    back = [[kb.cb("⬅️ К истории", f"st:open:{story.id}")]]
+    prog = await ctx.db.get_progress(user_id, story.id)
+    if not prog:
+        await ctx.show_screen(
+            user_id, "❤️ Отношения появятся, когда начнёшь историю.", back)
+        return
+    rom = story.romance_stats()
+    if not rom:
+        await ctx.show_screen(
+            user_id, "❤️ В этой истории нет романтических линий.", back)
+        return
+    variables = prog["vars"]
+    vals = [int(variables.get(key, 0)) for key, _ in rom]
+    scale = max(10, *vals)
+    hero = str(variables.get("_hero") or "Героиня")
+    lines = [f"❤️ *Отношения — {esc(story.title)}*", f"_За {esc(hero)}_", ""]
+    for (key, spec), val in zip(rom, vals):
+        filled = min(5, max(0, round(5 * val / scale)))
+        bar = "❤️" * filled + "🖤" * (5 - filled)
+        if val <= 1:
+            lvl = "холодность"
+        elif val <= 4:
+            lvl = "интерес"
+        elif val <= 7:
+            lvl = "симпатия"
+        else:
+            lvl = "страсть"
+        name = spec.get("name", key)
+        lines.append(f"{spec.get('emoji', '💗')} *{esc(name)}*  {bar}  {val} · _{lvl}_")
+        desc = (story.characters.get(name) or {}).get("desc", "")
+        if desc:
+            lines.append(f"      _{esc(desc)}_")
+        lines.append("")
+    lines.append("Отношения растут от твоих выборов в истории.")
+    await ctx.show_screen(user_id, "\n".join(lines), back)
 
 
 async def _story_card(ctx: Context, user_id: int, sid: str) -> None:
@@ -333,7 +377,7 @@ async def _screen_free(ctx: Context, user_id: int) -> None:
     bal = u["crystals"] if u else 0
     body = (
         t.FREE_TITLE.format(bal=bal, gem=GEM)
-        + f"\n\n📅 Ежедневно: +{REWARD_DAILY} {GEM}"
+        + f"\n\n📅 Ежедневно: +{REWARD_DAILY} {GEM} (серия дней — до +{REWARD_DAILY + 5} {GEM})"
         + "\n🎯 Задания: кристаллы за подписки и переходы"
         + f"\n👥 Друг по приглашению: +{REWARD_INVITE} {GEM}"
     )
@@ -343,12 +387,16 @@ async def _screen_free(ctx: Context, user_id: int) -> None:
 async def _free(ctx: Context, user_id: int, parts: list[str], callback_id: str) -> None:
     source = parts[1] if len(parts) > 1 else ""
     if source == "daily":
-        ok, bal, wait = await ctx.db.claim_daily(user_id, REWARD_DAILY)
+        ok, bal, wait, streak, got = await ctx.db.claim_daily(user_id, REWARD_DAILY)
         await ctx.api.answer_callback(callback_id)
         if ok:
-            await ctx.show_screen(user_id, f"📅 +{REWARD_DAILY} {GEM} начислено!\nБаланс: *{bal}* {GEM}\nПриходи завтра за новой наградой.", kb.free_menu())
+            nxt = REWARD_DAILY + min(streak, ctx.db.STREAK_BONUS_CAP)
+            tail = (f"\n🔥 Серия: *{streak}* дн. подряд — завтра *+{nxt}* {GEM}!"
+                    if streak > 1 else f"\nЗаходи завтра — за серию дней награда растёт (до +{REWARD_DAILY + ctx.db.STREAK_BONUS_CAP}).")
+            await ctx.show_screen(user_id, f"📅 +{got} {GEM} начислено!\nБаланс: *{bal}* {GEM}{tail}", kb.free_menu())
         else:
-            await ctx.show_screen(user_id, f"📅 Сегодня награда уже получена.\nСледующая — через *{_fmt_dur(wait)}*.\nБаланс: *{bal}* {GEM}", kb.free_menu())
+            s = f"\n🔥 Твоя серия: *{streak}* дн. — не прерывай!" if streak > 1 else ""
+            await ctx.show_screen(user_id, f"📅 Сегодня награда уже получена.\nСледующая — через *{_fmt_dur(wait)}*.{s}\nБаланс: *{bal}* {GEM}", kb.free_menu())
         return
     if source == "sub":
         chat_id = parts[2] if len(parts) > 2 else ""
@@ -517,6 +565,7 @@ async def _screen_history(ctx: Context, user_id: int) -> None:
         "grant": "Бонус", "daily": "Ежедневная", "subscribe": "Подписка",
         "invite": "Реферал", "spend": "Списание", "buy": "Покупка",
         "achievement": "Достижение", "revoke": "Отзыв награды", "task": "Задание",
+        "chapter": "Новая глава",
     }
     lines = ["📊 *История операций*", ""]
     for r in rows:

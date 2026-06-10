@@ -23,6 +23,7 @@ MSG_LIMIT = 3500       # безопасный порог длины одного
 NARRATORS = ("Рассказчик", "Narrator", "")
 SEP = "┄┄┄┄┄┄┄┄┄┄┄"
 ACHIEVEMENT_REWARD = 1  # +1 💎 за каждое достижение
+CHAPTER_REWARD = 1      # +1 💎 за первый вход в новую главу (как в Клубе Романтики)
 
 
 # ── Подстановка имени героини ────────────────────────────────
@@ -215,12 +216,19 @@ async def enter(ctx: Context, user_id: int, story: Story, scene_id: str,
                 continue
         break
 
+    chapter_bonus = 0
+    if new_chapter_banner and await ctx.db.award_chapter(
+        user_id, story.id, new_chapter_banner, CHAPTER_REWARD
+    ):
+        chapter_bonus = CHAPTER_REWARD
+
     user = await ctx.db.get_user(user_id)
     balance = int(user["crystals"]) if user else 0
     keyboard = _keyboard_for(story, scene, vchoices, variables)
     text = render_scene(story, scene, vblocks, vchoices, variables, balance)
     if new_chapter_banner:  # баннер главы — в шапку того же сообщения
-        text = f"📖 *{esc(new_chapter_banner)}*\n\n{text}"
+        bonus = f"  ·  +{chapter_bonus}{GEM}" if chapter_bonus else ""
+        text = f"📖 *{esc(new_chapter_banner)}*{bonus}\n\n{text}"
     if newly:  # достижение — заметным баннером в шапке сцены (плюс всплывашка)
         ach = " · ".join(f"{a.get('emoji', '🏆')} {esc(a.get('title', a['code']))}" for a in newly)
         text = f"🏆 *Новое достижение!*  {ach}  +{len(newly)}{GEM}\n\n{text}"
@@ -307,9 +315,18 @@ async def on_callback(ctx: Context, user_id: int, parts: list[str], callback_id:
                     notification=f"Не хватает кристаллов: нужно {cost}, у тебя {bal}. Выбери бесплатный вариант или пополни баланс.",
                 )
                 return
+        # «X% игроков выбрали так же» — считаем по стабильному индексу в ПОЛНОМ списке
+        # choices (видимый индекс i зависит от переменных конкретного игрока).
+        pct: int | None = None
+        stable_i = next((j for j, c in enumerate(scene.get("choices", [])) if c is choice), None)
+        if stable_i is not None:
+            await ctx.db.bump_choice(sid, scene_id, stable_i)
+            pct = await ctx.db.choice_percent(sid, scene_id, stable_i)
         apply_effects(variables, choice.get("fx"))
         newly = await enter(ctx, user_id, story, choice["goto"], variables, prev_chapter=prog["current_chapter"])
-        await ctx.api.answer_callback(callback_id, notification=_ach_toast(newly))
+        # Достижение в тосте приоритетнее; иначе — социальное «так же выбрали N%».
+        toast = _ach_toast(newly) or (f"💬 Так же выбрали {pct}% игроков" if pct is not None else None)
+        await ctx.api.answer_callback(callback_id, notification=toast)
         return
 
     await ctx.api.answer_callback(callback_id)

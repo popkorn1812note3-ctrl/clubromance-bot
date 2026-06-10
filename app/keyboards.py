@@ -73,6 +73,8 @@ def story_card(story: Story, *, unlocked: bool, has_progress: bool, completed: b
             kb.append([cb("🔄 Пройти заново", f"st:restart:{story.id}")])
         else:
             kb.append([cb("▶️ Начать историю", f"st:start:{story.id}")])
+        if has_progress and story.romance_stats():
+            kb.append([cb("❤️ Отношения", f"st:rel:{story.id}")])
     kb.append(back("nav:stories"))
     return kb
 

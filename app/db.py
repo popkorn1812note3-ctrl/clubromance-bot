@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
     crystals       INTEGER NOT NULL DEFAULT 0,
     notifications  INTEGER NOT NULL DEFAULT 1,
     last_daily     INTEGER NOT NULL DEFAULT 0,
+    daily_streak   INTEGER NOT NULL DEFAULT 0,
     subscribed     INTEGER NOT NULL DEFAULT 0,
     referred_by    INTEGER,
     pending        TEXT,
@@ -131,6 +132,22 @@ CREATE TABLE IF NOT EXISTS link_task_claims (
     claimed_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, task_id)
 );
+
+CREATE TABLE IF NOT EXISTS choice_stats (
+    story_id TEXT    NOT NULL,   -- глобальные счётчики выборов: «67% игроков выбрали так же»
+    scene_id TEXT    NOT NULL,
+    choice_i INTEGER NOT NULL,   -- индекс в ПОЛНОМ списке choices сцены (стабильный ключ)
+    cnt      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (story_id, scene_id, choice_i)
+);
+
+CREATE TABLE IF NOT EXISTS chapter_rewards (
+    user_id  INTEGER NOT NULL,   -- +1 кристалл за первый вход в главу (как в Клубе Романтики)
+    story_id TEXT    NOT NULL,
+    chapter  TEXT    NOT NULL,
+    at       INTEGER NOT NULL,
+    PRIMARY KEY (user_id, story_id, chapter)
+);
 """
 
 
@@ -165,6 +182,8 @@ class DB:
             await self._conn.execute("ALTER TABLE users ADD COLUMN gate_passed INTEGER NOT NULL DEFAULT 0")
         if "gate_checked_at" not in ucols:
             await self._conn.execute("ALTER TABLE users ADD COLUMN gate_checked_at INTEGER NOT NULL DEFAULT 0")
+        if "daily_streak" not in ucols:
+            await self._conn.execute("ALTER TABLE users ADD COLUMN daily_streak INTEGER NOT NULL DEFAULT 0")
 
         chcols = await table_cols("channels")
         if "reward" not in chcols:
@@ -327,15 +346,23 @@ class DB:
         await self.conn.commit()
 
     # ── Награды ───────────────────────────────────────────────
-    async def claim_daily(self, user_id: int, reward: int) -> tuple[bool, int, int]:
-        """(успех, баланс, секунд_до_следующей). Если рано — успех=False."""
+    STREAK_BONUS_CAP = 5  # максимум +5 к базовой ежедневке (день 6+ подряд)
+
+    async def claim_daily(self, user_id: int, base_reward: int) -> tuple[bool, int, int, int, int]:
+        """Ежедневная награда со стриком: день подряд → +1 к награде (кэп STREAK_BONUS_CAP).
+        Пропустил день (>48ч) — стрик сбрасывается на 1.
+        Возвращает (успех, баланс, секунд_до_следующей, стрик, начислено)."""
         u = await self.ensure_user(user_id)
-        elapsed = _now() - int(u["last_daily"])
-        if u["last_daily"] and elapsed < DAILY_COOLDOWN:
-            return False, int(u["crystals"]), DAILY_COOLDOWN - elapsed
-        await self.update_user(user_id, last_daily=_now())
-        bal = await self.add_crystals(user_id, reward, "daily", "daily_reward")
-        return True, bal, 0
+        now = _now()
+        last = int(u["last_daily"])
+        elapsed = now - last
+        if last and elapsed < DAILY_COOLDOWN:
+            return False, int(u["crystals"]), DAILY_COOLDOWN - elapsed, int(u["daily_streak"] or 0), 0
+        streak = int(u["daily_streak"] or 0) + 1 if (last and elapsed < 2 * DAILY_COOLDOWN) else 1
+        reward = base_reward + min(streak - 1, self.STREAK_BONUS_CAP)
+        await self.update_user(user_id, last_daily=now, daily_streak=streak)
+        bal = await self.add_crystals(user_id, reward, "daily", f"streak:{streak}")
+        return True, bal, 0, streak, reward
 
     async def claim_subscribe(self, user_id: int, reward: int) -> tuple[bool, int]:
         """Одноразовая награда за подписку. (успех, баланс)."""
@@ -727,6 +754,57 @@ class DB:
     async def list_achievements(self, user_id: int) -> set[str]:
         cur = await self.conn.execute("SELECT code FROM achievements WHERE user_id=?", (user_id,))
         return {r["code"] for r in await cur.fetchall()}
+
+    # ── Статистика выборов («X% игроков выбрали так же») ──────
+    async def bump_choice(self, story_id: str, scene_id: str, choice_i: int) -> None:
+        await self.conn.execute(
+            """INSERT INTO choice_stats (story_id, scene_id, choice_i, cnt) VALUES (?,?,?,1)
+               ON CONFLICT(story_id, scene_id, choice_i) DO UPDATE SET cnt = cnt + 1""",
+            (story_id, scene_id, choice_i),
+        )
+        await self.conn.commit()
+
+    async def choice_percent(self, story_id: str, scene_id: str, choice_i: int) -> int | None:
+        """Процент игроков, выбравших вариант choice_i в этой сцене. None, если данных нет."""
+        cur = await self.conn.execute(
+            "SELECT choice_i, cnt FROM choice_stats WHERE story_id=? AND scene_id=?",
+            (story_id, scene_id),
+        )
+        rows = await cur.fetchall()
+        total = sum(int(r["cnt"]) for r in rows)
+        if not total:
+            return None
+        mine = next((int(r["cnt"]) for r in rows if int(r["choice_i"]) == choice_i), 0)
+        return round(100 * mine / total)
+
+    # ── Награда за главу (+1💎 за первый вход, как в Клубе Романтики) ──
+    async def award_chapter(self, user_id: int, story_id: str, chapter: str, reward: int) -> bool:
+        """True — глава новая для юзера, награда начислена (гонко-безопасно)."""
+        cur = await self.conn.execute(
+            """INSERT INTO chapter_rewards (user_id, story_id, chapter, at) VALUES (?,?,?,?)
+               ON CONFLICT(user_id, story_id, chapter) DO NOTHING""",
+            (user_id, story_id, chapter, _now()),
+        )
+        if cur.rowcount == 0:
+            await self.conn.commit()
+            return False
+        await self.add_crystals(user_id, reward, "chapter", f"{story_id}:{chapter[:48]}")
+        return True
+
+    # ── Рассылка (сегменты получателей) ───────────────────────
+    async def broadcast_user_ids(self, segment: str = "all", story_id: str = "") -> list[int]:
+        """user_id получателей рассылки. Уважает notifications=1 всегда.
+        Сегменты: all | in_progress:<story> | completed:<story>."""
+        q = "SELECT user_id FROM users WHERE notifications=1"
+        args: list[Any] = []
+        if segment == "in_progress" and story_id:
+            q += " AND user_id IN (SELECT user_id FROM progress WHERE story_id=? AND status='in_progress')"
+            args.append(story_id)
+        elif segment == "completed" and story_id:
+            q += " AND user_id IN (SELECT user_id FROM completions WHERE story_id=?)"
+            args.append(story_id)
+        cur = await self.conn.execute(q, args)
+        return [int(r["user_id"]) for r in await cur.fetchall()]
 
     async def recent_ledger(self, user_id: int, limit: int = 10) -> list[dict[str, Any]]:
         cur = await self.conn.execute(

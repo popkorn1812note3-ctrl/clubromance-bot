@@ -11,6 +11,7 @@ import asyncio
 import html
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -152,10 +153,11 @@ h2{font-size:12.5px;font-weight:700;text-transform:uppercase;letter-spacing:.13e
 .btn.danger{background:rgba(255,93,108,.1);color:var(--danger);box-shadow:inset 0 0 0 1px rgba(255,93,108,.28)}
 .btn.danger:hover{background:rgba(255,93,108,.18)}
 .btn.sm{padding:7px 12px;font-size:13px}
-input[type=text],input[type=number]{background:var(--bg2);border:1px solid var(--border);color:var(--text);
+input[type=text],input[type=number],textarea{background:var(--bg2);border:1px solid var(--border);color:var(--text);
   border-radius:var(--rs);padding:10px 13px;font:inherit;transition:.15s;min-width:0}
-input::placeholder{color:var(--faint)}
-input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,93,158,.16)}
+textarea{width:100%;min-height:110px;resize:vertical}
+input::placeholder,textarea::placeholder{color:var(--faint)}
+input:focus,textarea:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,93,158,.16)}
 .field{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
 .field input{flex:1}
 .uploader{display:flex;gap:14px;align-items:center;margin-top:13px;flex-wrap:wrap}
@@ -244,6 +246,9 @@ document.querySelectorAll('.up-input').forEach(function(inp){
 document.querySelectorAll('form[data-confirm]').forEach(function(f){
   f.addEventListener('submit',function(e){ if(!confirm(f.getAttribute('data-confirm'))) e.preventDefault(); });
 });
+document.querySelectorAll('button[data-confirm-submit]').forEach(function(b){
+  b.addEventListener('click',function(e){ if(!confirm('Отправить рассылку всем выбранным получателям?')) e.preventDefault(); });
+});
 var ks=document.getElementById('kind-sel');
 if(ks){
   var upd=function(){
@@ -268,7 +273,7 @@ def page(title: str, body: str, active: str = "") -> HTMLResponse:
         "<div class=topbar><div class=bar>"
         "<a class=brand href='/'><span class=logo>♥</span> <span class=nm>Club Romance</span> "
         "<span class=badge-soft>admin</span></a>"
-        f"<nav class=nav>{nav('/', 'Главная', 'home')}{nav('/users', 'Пользователи', 'users')}{nav('/subs', 'Задания', 'subs')}{nav('/stats', 'Статистика', 'stats')}</nav>"
+        f"<nav class=nav>{nav('/', 'Главная', 'home')}{nav('/users', 'Пользователи', 'users')}{nav('/subs', 'Задания', 'subs')}{nav('/broadcast', 'Рассылка', 'bcast')}{nav('/stats', 'Статистика', 'stats')}</nav>"
         "</div></div>"
     )
     return HTMLResponse(
@@ -710,6 +715,111 @@ async def subs_task_save(
 async def subs_task_delete(task_id: int, _: str = Depends(auth)):
     await ctx().db.delete_link_task(task_id)
     return RedirectResponse("/subs", status_code=303)
+
+
+# ── Рассылка ─────────────────────────────────────────────────
+_bcast: dict = {"running": False, "sent": 0, "errors": 0, "total": 0, "started_at": 0}
+
+
+async def _run_broadcast(uids: list[int], text: str, image: dict | None) -> None:
+    _bcast.update(running=True, sent=0, errors=0, total=len(uids), started_at=int(time.time()))
+    try:
+        for uid in uids:
+            mid = await ctx().send(uid, text, image=image)
+            _bcast["sent" if mid else "errors"] += 1
+            await asyncio.sleep(0.12)  # ~8 RPS — под дросселем MAX
+    except Exception:  # noqa: BLE001
+        log.exception("broadcast упал")
+    finally:
+        _bcast["running"] = False
+        log.info("broadcast завершён: %s/%s (ошибок %s)", _bcast["sent"], _bcast["total"], _bcast["errors"])
+
+
+async def _bcast_image(file: UploadFile | None) -> dict | None:
+    """Загрузить приложенную к рассылке картинку в MAX → image payload (или None)."""
+    if file is None or not file.filename:
+        return None
+    data = await file.read()
+    if not data:
+        return None
+    photos = await ctx().api.upload_image(
+        data, filename=file.filename or "image.png", content_type=file.content_type or "image/png"
+    )
+    return {"photos": photos}
+
+
+@app.get("/broadcast", response_class=HTMLResponse)
+async def broadcast_page(_: str = Depends(auth)):
+    c = ctx()
+    total = await c.db.count_users()
+    reach = len(await c.db.broadcast_user_ids("all"))
+
+    if _bcast["running"]:
+        status = (
+            "<div class=card style='margin-bottom:14px'><b>📤 Рассылка идёт…</b>"
+            f"<div class=muted>отправлено {_bcast['sent']} из {_bcast['total']} · ошибок {_bcast['errors']}</div></div>"
+        )
+        refresh = "<meta http-equiv=refresh content=3>"
+    else:
+        last = ""
+        if _bcast["total"]:
+            last = (f"<div class=card style='margin-bottom:14px'><b>Последняя рассылка</b>"
+                    f"<div class=muted>доставлено {_bcast['sent']} из {_bcast['total']} · ошибок {_bcast['errors']}"
+                    f" · {fmt_ts(_bcast['started_at'])}</div></div>")
+        status, refresh = last, ""
+
+    story_opts = "".join(f"<option value='{esc(s.id)}'>{esc(s.title)}</option>" for s in c.registry.all())
+    form = (
+        "<form method=post action='/broadcast/send' enctype='multipart/form-data' class=card>"
+        "<div class=field><textarea name=text required placeholder='Текст сообщения. Markdown: *жирный*, _курсив_.'></textarea></div>"
+        "<div class=field><select name=segment>"
+        "<option value=all>Все (с включёнными уведомлениями)</option>"
+        "<option value=in_progress>Читают историю (не дочитали)</option>"
+        "<option value=completed>Завершили историю</option></select>"
+        f"<select name=story_id>{story_opts}</select></div>"
+        "<div class=field><label class=filebtn>🖼 Картинка (опц.)<input class=up-input type=file name=file accept='image/*'></label>"
+        "<span class=fname>файл не выбран</span></div>"
+        "<div class=field>"
+        "<button class='btn ghost' formaction='/broadcast/test'>📨 Тест себе (админам)</button>"
+        "<button class='btn primary' data-confirm-submit>Отправить всем выбранным</button></div>"
+        "<div class=muted>История применяется к сегментам «читают»/«завершили». Уведомления (⚙️ в боте) уважаются всегда. "
+        "Скорость ~8 сообщений/сек.</div></form>"
+    )
+    body = (
+        "<a class=back href='/'>← На главную</a>"
+        "<div class=hero><h1>Рассылка</h1>"
+        f"<p class=sub>Анонс новой главы или акции · всего юзеров {total}, получат (все+🔔) ≈ {reach}</p></div>"
+        f"{refresh}{status}"
+        f"<section><div class=sec-head><h2>Новое сообщение</h2></div>{form}</section>"
+    )
+    return page("Рассылка", body, "bcast")
+
+
+@app.post("/broadcast/test")
+async def broadcast_test(
+    text: str = Form(...), segment: str = Form("all"), story_id: str = Form(""),
+    file: UploadFile | None = None, _: str = Depends(auth),
+):
+    image = await _bcast_image(file)
+    for uid in sorted(cfg.admin_ids):
+        await ctx().send(uid, f"🧪 *Тест рассылки*\n\n{text}", image=image)
+    return RedirectResponse("/broadcast", status_code=303)
+
+
+@app.post("/broadcast/send")
+async def broadcast_send(
+    text: str = Form(...), segment: str = Form("all"), story_id: str = Form(""),
+    file: UploadFile | None = None, _: str = Depends(auth),
+):
+    if _bcast["running"]:
+        raise HTTPException(409, "Рассылка уже идёт — дождитесь завершения")
+    text = text.strip()
+    if not text:
+        raise HTTPException(400, "Пустой текст")
+    image = await _bcast_image(file)
+    uids = await ctx().db.broadcast_user_ids(segment, story_id.strip())
+    asyncio.create_task(_run_broadcast(uids, text, image))
+    return RedirectResponse("/broadcast", status_code=303)
 
 
 # ── Пользователи ─────────────────────────────────────────────
