@@ -568,7 +568,11 @@ async def preview(key: str, _: str = Depends(auth)):
 
 @app.post("/channels/add")
 async def channel_add(chat_id: int = Form(...), title: str = Form(""), link: str = Form(""), _: str = Depends(auth)):
-    await ctx().db.upsert_channel(chat_id, title.strip(), link.strip())
+    # force_required: добавление через админку ОП — явное намерение сделать канал обязательным
+    # (даже если он раньше был каналом-заданием). Гейт сбросится только при реальном изменении.
+    changed = await ctx().db.upsert_channel(chat_id, title.strip(), link.strip(), force_required=True)
+    if changed:
+        log.info("ОП: канал %s добавлен в гейт — всем юзерам нужна повторная проверка подписки", chat_id)
     return RedirectResponse("/", status_code=303)
 
 
@@ -719,6 +723,8 @@ async def subs_task_delete(task_id: int, _: str = Depends(auth)):
 
 # ── Рассылка ─────────────────────────────────────────────────
 _bcast: dict = {"running": False, "sent": 0, "errors": 0, "total": 0, "started_at": 0}
+# Ссылки на фоновые задачи — иначе Python может собрать task до завершения (грабля Г12 OPBOT).
+_bg_tasks: set = set()
 
 
 async def _run_broadcast(uids: list[int], text: str, image: dict | None) -> None:
@@ -818,7 +824,9 @@ async def broadcast_send(
         raise HTTPException(400, "Пустой текст")
     image = await _bcast_image(file)
     uids = await ctx().db.broadcast_user_ids(segment, story_id.strip())
-    asyncio.create_task(_run_broadcast(uids, text, image))
+    task = asyncio.create_task(_run_broadcast(uids, text, image))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
     return RedirectResponse("/broadcast", status_code=303)
 
 

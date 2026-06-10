@@ -40,7 +40,8 @@ async def main() -> None:
         log.warning("Не удалось проверить подписки: %s", e)
 
     # Фоновый отзыв награды за подписку у отписавшихся (раз в час).
-    asyncio.create_task(retention_loop(ctx))
+    # Ссылку держим до конца main — иначе Python может собрать task (грабля Г12 OPBOT).
+    retention_task = asyncio.create_task(retention_loop(ctx))
 
     log.info("🚀 ClubRomance запущен (polling). Ctrl+C для остановки.")
     marker: int | None = None
@@ -61,6 +62,7 @@ async def main() -> None:
     except (KeyboardInterrupt, asyncio.CancelledError):
         log.info("Остановка…")
     finally:
+        retention_task.cancel()
         await ctx.api.close()
         await ctx.db.close()
 

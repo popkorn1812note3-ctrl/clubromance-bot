@@ -398,7 +398,16 @@ class DB:
         return int(row["c"]) if row else 0
 
     # ── Каналы обязательной подписки (ОП / гейт) ──────────────
-    async def upsert_channel(self, chat_id: int, title: str = "", link: str = "") -> None:
+    async def upsert_channel(
+        self, chat_id: int, title: str = "", link: str = "", *, force_required: bool = False
+    ) -> bool:
+        """Регистрация/обновление канала. Сброс гейта (gate_passed=0 всем) — ТОЛЬКО
+        когда состав гейта реально изменился: появился новый канал, либо существующий
+        принудительно переведён в обязательные (force_required, из админки ОП).
+        Повторный bot_added или правка названия гейт не сбрасывают (иначе каждый
+        пере-добавленный бот/канал-задание перепроверял бы всех юзеров).
+        Возвращает True, если гейт изменился."""
+        existing = await self.get_channel(chat_id)
         await self.conn.execute(
             """INSERT INTO channels (chat_id, title, link, required, added_at) VALUES (?,?,?,1,?)
                ON CONFLICT(chat_id) DO UPDATE SET
@@ -406,10 +415,16 @@ class DB:
                    link=COALESCE(NULLIF(excluded.link,''), channels.link)""",
             (chat_id, title, link, _now()),
         )
+        if force_required and existing is not None:
+            await self.conn.execute("UPDATE channels SET required=1 WHERE chat_id=?", (chat_id,))
         await self.conn.commit()
-        # Новый канал в гейте → все юзеры проходят гейт заново.
-        await self.conn.execute("UPDATE users SET gate_passed=0")
-        await self.conn.commit()
+        gate_changed = existing is None or (force_required and not existing["required"])
+        if gate_changed:
+            # Новый канал в гейте → все юзеры проходят проверку подписки заново
+            # (кеш сброшен; реальная проверка случится на следующем действии юзера).
+            await self.conn.execute("UPDATE users SET gate_passed=0")
+            await self.conn.commit()
+        return gate_changed
 
     async def remove_channel(self, chat_id: int) -> None:
         await self.conn.execute("DELETE FROM channels WHERE chat_id=?", (chat_id,))

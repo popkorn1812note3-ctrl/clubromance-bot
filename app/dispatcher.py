@@ -62,8 +62,12 @@ async def _on_bot_added(ctx: Context, update: dict[str, Any]) -> None:
         link = chat.get("link") or ""
     except MaxError as e:
         log.warning("get_chat(%s) не удался: %s", chat_id, e)
-    await ctx.db.upsert_channel(chat_id, title, link)
-    log.info("Канал добавлен в гейт ОП: %s (chat_id=%s)", title or "?", chat_id)
+    gate_changed = await ctx.db.upsert_channel(chat_id, title, link)
+    if gate_changed:
+        log.info("Канал добавлен в гейт ОП: %s (chat_id=%s) — гейт сброшен, юзеры пройдут проверку заново",
+                 title or "?", chat_id)
+    else:
+        log.info("Канал уже зарегистрирован: %s (chat_id=%s) — гейт не трогаем", title or "?", chat_id)
 
 
 async def _dispatch(ctx: Context, update: dict[str, Any]) -> None:
