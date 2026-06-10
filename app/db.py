@@ -17,7 +17,7 @@ from typing import Any
 
 import aiosqlite
 
-START_CRYSTALS = 50            # стартовый баланс нового игрока
+START_CRYSTALS = 10            # стартовый баланс нового игрока (мало — чтобы был стимул выполнять задания)
 DAILY_COOLDOWN = 24 * 3600     # ежедневная награда раз в 24ч
 
 SCHEMA = """
