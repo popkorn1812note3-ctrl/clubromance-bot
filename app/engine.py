@@ -135,6 +135,11 @@ class Story:
         return bool(self.data.get("available", True))
 
     @property
+    def soon_text(self) -> str:
+        """Текст затычки для закрытой истории («откроется через 24 часа» и т.п.)."""
+        return self.data.get("soon_text", "")
+
+    @property
     def start_scene(self) -> str:
         return self.data["start"]
 

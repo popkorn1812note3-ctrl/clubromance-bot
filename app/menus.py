@@ -145,13 +145,25 @@ async def _story(ctx: Context, user_id: int, parts: list[str], callback_id: str)
     action = parts[1] if len(parts) > 1 else ""
     sid = parts[2] if len(parts) > 2 else ""
 
-    if action == "soon":
-        await ctx.api.answer_callback(callback_id, notification="Эта история скоро выйдет 🔒")
-        return
-
     story = ctx.registry.get(sid)
     if story is None:
         await ctx.api.answer_callback(callback_id, notification="История не найдена")
+        return
+
+    if action == "soon" or not story.available:
+        # Затычка закрытой истории: полноценный экран (тосты в web-клиенте не видны),
+        # деньги не списываются — кнопок открытия здесь нет.
+        await ctx.api.answer_callback(callback_id)
+        when = story.soon_text or "Совсем скоро — следи за новостями!"
+        body = f"🔒 {story.cover} *{esc(story.title)}*\n\n"
+        if story.short:
+            body += f"_{esc(story.short)}_\n\n"
+        body += f"⏳ {esc(when)}"
+        await ctx.show_screen(
+            user_id, body,
+            [[kb.cb("⬅️ К историям", "nav:stories")]],
+            image=await _img(ctx, f"cover:{sid}"),
+        )
         return
 
     if action == "open":
