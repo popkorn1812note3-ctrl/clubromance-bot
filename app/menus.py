@@ -68,13 +68,20 @@ async def show_gate(ctx: Context, user_id: int, *, force_new: bool = False) -> N
 
 
 async def handle_gate_check(ctx: Context, user_id: int, callback_id: str) -> None:
-    ok, _missing = await gate.recheck(ctx, user_id)
+    ok, missing = await gate.recheck(ctx, user_id)
     if ok:
         await ctx.api.answer_callback(callback_id, notification="Спасибо за подписку! ✅")
         await show_welcome(ctx, user_id)
-    else:
-        await ctx.api.answer_callback(callback_id, notification="Подписка не найдена — подпишись на все каналы")
-        await show_gate(ctx, user_id)
+        return
+    # Web-клиент MAX не показывает тосты — отказ должен быть виден НА ЭКРАНЕ.
+    await ctx.api.answer_callback(callback_id, notification="Подписка не найдена")
+    names = "\n".join(f"• {esc(ch['title'] or 'канал')}" for ch in missing)
+    channels = await ctx.db.list_required_channels()
+    await ctx.show_screen(
+        user_id,
+        f"{t.GATE_FAIL}\n\nНе хватает подписки:\n{names}" if names else t.GATE_FAIL,
+        kb.gate(channels),
+    )
 
 
 # ── Роутер callback'ов меню ──────────────────────────────────

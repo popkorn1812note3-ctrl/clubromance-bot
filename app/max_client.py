@@ -222,14 +222,38 @@ class MaxClient:
     async def is_member(self, chat_id: int, user_id: int) -> bool:
         """Подписан ли user_id на канал. Бот должен быть АДМИНОМ канала.
 
-        ВАЖНО (грабля GiftBot): MAX может игнорировать фильтр user_ids и вернуть
-        произвольных участников — поэтому СВЕРЯЕМ user_id явно. Бросает ChatDenied,
-        если бот не админ канала (проверку провести нельзя)."""
+        ВАЖНО (грабля GiftBot): MAX может ИГНОРИРОВАТЬ фильтр user_ids и вернуть
+        произвольных участников — поэтому сверяем user_id явно, а если в ответе
+        чужие юзеры (фильтр не сработал) — сканируем участников постранично.
+        Бросает ChatDenied, если бот не админ канала (проверку провести нельзя)."""
         data = await self._request(
             "GET", f"/chats/{chat_id}/members", params={"user_ids": user_id}
         )
         members = data.get("members", []) if isinstance(data, dict) else []
-        return any(m.get("user_id") == user_id for m in members)
+        if any(m.get("user_id") == user_id for m in members):
+            return True
+        if not members:
+            return False  # фильтр сработал и юзера нет → действительно не подписан
+        # В ответе чужие участники → фильтр проигнорирован, ответ бесполезен.
+        # Честная проверка: постраничный обход участников (до ~5000).
+        return await self._scan_member(chat_id, user_id)
+
+    async def _scan_member(self, chat_id: int, user_id: int, max_pages: int = 50) -> bool:
+        marker: int | None = None
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"count": 100}
+            if marker is not None:
+                params["marker"] = marker
+            data = await self._request("GET", f"/chats/{chat_id}/members", params=params)
+            members = data.get("members", []) if isinstance(data, dict) else []
+            if any(m.get("user_id") == user_id for m in members):
+                return True
+            marker = data.get("marker") if isinstance(data, dict) else None
+            if not marker or not members:
+                return False
+        log.warning("scan_member: канал %s больше %s участников — юзер %s не найден в первых страницах",
+                    chat_id, max_pages * 100, user_id)
+        return False
 
     # ── Webhook (subscriptions) ───────────────────────────────
     async def list_webhooks(self) -> list[dict[str, Any]]:
