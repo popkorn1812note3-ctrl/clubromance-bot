@@ -434,6 +434,26 @@ class DB:
             await self.conn.commit()
         return gate_changed
 
+    async def register_known_channel(self, chat_id: int, title: str = "", link: str = "") -> None:
+        """Запомнить канал, куда добавили бота, НЕ включая его ни в ОП, ни в задания
+        (required=0, reward=0). Включение — только вручную из админки. Если канал уже
+        в ОП/заданиях — обновляем только название/ссылку, статус не трогаем."""
+        await self.conn.execute(
+            """INSERT INTO channels (chat_id, title, link, required, added_at) VALUES (?,?,?,0,?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+                   title=COALESCE(NULLIF(excluded.title,''), channels.title),
+                   link=COALESCE(NULLIF(excluded.link,''), channels.link)""",
+            (chat_id, title, link, _now()),
+        )
+        await self.conn.commit()
+
+    async def list_known_channels(self) -> list[dict[str, Any]]:
+        """Каналы «на примете»: бот добавлен админом, но канал не в ОП и не в заданиях."""
+        cur = await self.conn.execute(
+            "SELECT * FROM channels WHERE required=0 AND reward=0 ORDER BY added_at DESC"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     async def remove_channel(self, chat_id: int) -> None:
         await self.conn.execute("DELETE FROM channels WHERE chat_id=?", (chat_id,))
         await self.conn.commit()

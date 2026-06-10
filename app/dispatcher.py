@@ -51,7 +51,9 @@ async def _gate_block(ctx: Context, uid: int, *, force: bool = False) -> bool:
 
 
 async def _on_bot_added(ctx: Context, update: dict[str, Any]) -> None:
-    """Бота добавили в канал админом → регистрируем канал в гейте ОП."""
+    """Бота добавили в канал админом → только ЗАПОМИНАЕМ канал (title/link/chat_id).
+    В ОП или задания канал попадает ТОЛЬКО вручную через админку — иначе любой канал,
+    куда добавили бота (задания, сторонние проекты), вставал бы в обязательную подписку."""
     chat_id = update.get("chat_id")
     if chat_id is None or not update.get("is_channel"):
         return
@@ -62,12 +64,9 @@ async def _on_bot_added(ctx: Context, update: dict[str, Any]) -> None:
         link = chat.get("link") or ""
     except MaxError as e:
         log.warning("get_chat(%s) не удался: %s", chat_id, e)
-    gate_changed = await ctx.db.upsert_channel(chat_id, title, link)
-    if gate_changed:
-        log.info("Канал добавлен в гейт ОП: %s (chat_id=%s) — гейт сброшен, юзеры пройдут проверку заново",
-                 title or "?", chat_id)
-    else:
-        log.info("Канал уже зарегистрирован: %s (chat_id=%s) — гейт не трогаем", title or "?", chat_id)
+    await ctx.db.register_known_channel(chat_id, title, link)
+    log.info("Канал замечен (бот добавлен админом): %s (chat_id=%s). В ОП/задания — через админку.",
+             title or "?", chat_id)
 
 
 async def _dispatch(ctx: Context, update: dict[str, Any]) -> None:

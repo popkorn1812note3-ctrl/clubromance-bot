@@ -345,8 +345,36 @@ async def dashboard(_: str = Depends(auth)):
         "<input type=text name=title placeholder='Название канала'></div>"
         "<div class=field><input type=text name=link placeholder='https://max.ru/...'>"
         "<button class='btn primary'>Добавить канал</button></div>"
-        "<div class=muted>chat_id берётся из логов при добавлении бота в канал. Бот должен быть админом.</div></form>"
+        "<div class=muted>⚠️ Каналы попадают в ОП только отсюда (вручную). "
+        "Добавление бота админом в канал ничего не включает само.</div></form>"
     )
+
+    known = await c.db.list_known_channels()
+    known_html = ""
+    if known:
+        rows_k = ""
+        for ch in known:
+            rows_k += (
+                f"<div class=card><div class=chrow><div><b>👀 {esc(ch['title'] or 'Канал')}</b> "
+                f"<span class=tag>{ch['chat_id']}</span>"
+                f"<div class=muted>{esc(ch['link'] or 'без ссылки')}</div></div>"
+                f"<div style='display:flex;gap:8px;flex-wrap:wrap'>"
+                f"<form method=post action='/channels/add'>"
+                f"<input type=hidden name=chat_id value='{ch['chat_id']}'>"
+                f"<input type=hidden name=title value='{esc(ch['title'] or '')}'>"
+                f"<input type=hidden name=link value='{esc(ch['link'] or '')}'>"
+                f"<button class='btn ghost sm'>🔒 В обяз. подписку</button></form>"
+                f"<a class='btn ghost sm' href='/subs'>🎯 В задания</a>"
+                f"<form method=post action='/channels/{ch['chat_id']}/delete' "
+                f"data-confirm='Забыть канал «{esc(ch['title'] or '')}»?'>"
+                f"<button class='btn danger sm'>Забыть</button></form>"
+                f"</div></div></div>"
+            )
+        known_html = (
+            "<section><div class=sec-head><h2>Каналы на примете</h2>"
+            "<span class=hint>бот добавлен админом, но канал НЕ в ОП и не в заданиях</span></div>"
+            + rows_k + "</section>"
+        )
 
     body = (
         "<div class=hero><h1>Панель управления</h1>"
@@ -358,7 +386,7 @@ async def dashboard(_: str = Depends(auth)):
         "<section><div class=sec-head><h2>Истории</h2><span class=hint>обложка + картинки сцен</span></div>"
         f"<div class=grid>{s_html}</div></section>"
         "<section><div class=sec-head><h2>Каналы обязательной подписки</h2></div>"
-        f"{ch_rows}{add_ch}</section>"
+        f"{ch_rows}{add_ch}</section>{known_html}"
     )
     return page("ClubRomance Admin", body, "home")
 
