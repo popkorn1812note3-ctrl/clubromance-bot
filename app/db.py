@@ -405,6 +405,33 @@ class DB:
         row = await cur.fetchone()
         return int(row["c"]) if row else 0
 
+    async def referral_stats(self) -> dict[str, int]:
+        """Сводка реферальной программы (агрегация в SQL): приглашено всего/за день/неделю,
+        уникальных пригласивших, выдано кристаллов за рефералов."""
+        async def one(q: str, *a: Any) -> int:
+            cur = await self.conn.execute(q, a)
+            row = await cur.fetchone()
+            return int(row[0] or 0) if row else 0
+        now = _now()
+        return {
+            "referred": await one("SELECT COUNT(*) FROM referrals"),
+            "referred_today": await one("SELECT COUNT(*) FROM referrals WHERE at>=?", now - 86400),
+            "referred_week": await one("SELECT COUNT(*) FROM referrals WHERE at>=?", now - 7 * 86400),
+            "inviters": await one("SELECT COUNT(DISTINCT inviter_id) FROM referrals"),
+            "crystals_paid": await one("SELECT SUM(amount) FROM ledger WHERE type='invite'"),
+        }
+
+    async def top_referrers(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Топ пригласивших: user_id, имя, юзернейм, сколько привёл."""
+        cur = await self.conn.execute(
+            """SELECT r.inviter_id AS user_id, COUNT(*) AS invited,
+                      u.name AS name, u.username AS username
+               FROM referrals r LEFT JOIN users u ON u.user_id = r.inviter_id
+               GROUP BY r.inviter_id ORDER BY invited DESC, r.inviter_id LIMIT ?""",
+            (limit,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
     # ── Каналы обязательной подписки (ОП / гейт) ──────────────
     async def upsert_channel(
         self, chat_id: int, title: str = "", link: str = "", *, force_required: bool = False

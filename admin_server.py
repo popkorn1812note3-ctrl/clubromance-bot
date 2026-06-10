@@ -461,11 +461,39 @@ async def stats_page(_: str = Depends(auth)):
     if not channels:
         ch_html = "<div class=empty>Каналов нет.</div>"
 
+    # Реферальная программа
+    rs = await c.db.referral_stats()
+    inv_pct = f"{round(100 * rs['inviters'] / st['total'])}%" if st["total"] else "—"
+    ref_cards = (
+        f"<div class=stat><div class=num>{rs['referred']}</div><div class=lab>приглашено друзей</div>"
+        f"<div class=s2>сегодня {rs['referred_today']} · за 7 дн. {rs['referred_week']}</div></div>"
+        f"<div class='stat plain'><div class=num>{rs['inviters']}</div><div class=lab>игроков приглашали</div>"
+        f"<div class=s2>{inv_pct} всех юзеров</div></div>"
+        f"<div class='stat plain'><div class=num>{rs['crystals_paid']}</div>"
+        f"<div class=lab>💎 выдано за рефералов</div></div>"
+    )
+    top = await c.db.top_referrers(10)
+    if top:
+        rows_t = ""
+        for i, r in enumerate(top, 1):
+            nm = esc(r["name"] or "без имени")
+            un = f" @{esc(r['username'])}" if r["username"] else ""
+            rows_t += (f"<div class=led><span>#{i} <a href='/users/{r['user_id']}' "
+                       f"style='color:var(--accent)'>{nm}</a><span class=muted>{un} · "
+                       f"<span class=tag>{r['user_id']}</span></span></span>"
+                       f"<span><b>{r['invited']}</b> 👥</span></div>")
+        top_html = f"<div class=card style='margin-top:14px'>{rows_t}</div>"
+    else:
+        top_html = "<div class=empty style='margin-top:14px'>Пока никто никого не пригласил.</div>"
+
     body = (
         "<a class=back href='/'>← Назад</a>"
         "<div class=hero><h1>Статистика подписки</h1><p class=sub>Воронка обязательной подписки (ОП)</p></div>"
         f"{refresh}<div class=stats-grid>{cards}</div>{newcard}{warn}{recheck_card}"
         "<section><div class=sec-head><h2>Каналы</h2></div>" + ch_html + "</section>"
+        "<section><div class=sec-head><h2>Реферальная программа</h2>"
+        "<span class=hint>«Пригласить друга» в боте: +20 💎 за каждого нового по ссылке</span></div>"
+        f"<div class=stats-grid>{ref_cards}</div>{top_html}</section>"
     )
     return page("Статистика ОП", body, "stats")
 
