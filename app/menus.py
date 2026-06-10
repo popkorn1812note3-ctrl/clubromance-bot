@@ -334,7 +334,7 @@ async def _screen_free(ctx: Context, user_id: int) -> None:
     body = (
         t.FREE_TITLE.format(bal=bal, gem=GEM)
         + f"\n\n📅 Ежедневно: +{REWARD_DAILY} {GEM}"
-        + "\n📣 Подписки за награду: кристаллы за подписку на каналы"
+        + "\n🎯 Задания: кристаллы за подписки и переходы"
         + f"\n👥 Друг по приглашению: +{REWARD_INVITE} {GEM}"
     )
     await ctx.show_screen(user_id, body, kb.free_menu())
@@ -358,6 +358,11 @@ async def _free(ctx: Context, user_id: int, parts: list[str], callback_id: str) 
             await ctx.api.answer_callback(callback_id)
             await _screen_subs(ctx, user_id)
         return
+    if source == "task":
+        task_id = parts[2] if len(parts) > 2 else ""
+        do_claim = len(parts) > 3 and parts[3] == "claim"
+        await _link_task(ctx, user_id, task_id, callback_id, claim=do_claim)
+        return
     if source == "invite":
         await ctx.api.answer_callback(callback_id)
         cnt = await ctx.db.count_referrals(user_id)
@@ -372,22 +377,20 @@ async def _free(ctx: Context, user_id: int, parts: list[str], callback_id: str) 
     await ctx.api.answer_callback(callback_id)
 
 
-# ── Подписки за награду ──────────────────────────────────────
+# ── Задания: подписки на каналы + переходы по ссылке ─────────
 async def _screen_subs(ctx: Context, user_id: int) -> None:
     channels = await ctx.db.list_reward_channels()
-    if not channels:
+    tasks = await ctx.db.list_link_tasks()
+    if not channels and not tasks:
         await ctx.show_screen(
             user_id,
-            "📣 *Подписки за награду*\n\nСейчас активных заданий нет — загляни позже!",
+            "🎯 *Задания*\n\nСейчас активных заданий нет — загляни позже!",
             [[kb.cb("⬅️ Назад", "nav:free")]],
         )
         return
     claims = {c["chat_id"]: c for c in await ctx.db.list_user_claims(user_id)}
-    lines = [
-        "📣 *Подписки за награду*", "",
-        "Подпишись на канал и забери кристаллы. Награда закрепится, если останешься "
-        "подписан; отпишешься — её заберут обратно.", "",
-    ]
+    task_claims = await ctx.db.list_user_link_claims(user_id)
+    lines = ["🎯 *Задания*", "", "Выполняй задания и получай кристаллы:", ""]
     for ch in channels:
         title = esc(ch["title"] or "Канал")
         c = claims.get(ch["chat_id"])
@@ -398,8 +401,17 @@ async def _screen_subs(ctx: Context, user_id: int) -> None:
         else:
             hold = ch["hold_days"]
             tail = f" · держать {hold} дн." if hold and hold > 0 else ""
-            lines.append(f"📣 {title} — *+{ch['reward']}* {GEM}{tail}")
-    await ctx.show_screen(user_id, "\n".join(lines), kb.subs_menu(channels, claims))
+            lines.append(f"📣 {title} — *+{ch['reward']}* {GEM} (подписка{tail})")
+    for t in tasks:
+        title = esc(t["title"] or "Задание")
+        if t["id"] in task_claims:
+            lines.append(f"✅ {title} — получено (+{t['reward']} {GEM})")
+        else:
+            lines.append(f"🚀 {title} — *+{t['reward']}* {GEM}")
+    if channels:
+        lines += ["", "_Награда за подписку закрепится, если останешься подписан; "
+                      "отпишешься раньше срока — её заберут._"]
+    await ctx.show_screen(user_id, "\n".join(lines), kb.subs_menu(channels, claims, tasks, task_claims))
 
 
 async def _screen_sub_one(ctx: Context, user_id: int, ch: dict[str, Any]) -> None:
@@ -447,6 +459,38 @@ async def _claim_sub(ctx: Context, user_id: int, chat_id_str: str, callback_id: 
     await _screen_subs(ctx, user_id)
 
 
+async def _link_task(ctx: Context, user_id: int, task_id_str: str, callback_id: str, *, claim: bool) -> None:
+    """Ссылочное задание (старт бота / чат / раздача). Без claim — карточка, с claim — выдача."""
+    try:
+        task_id = int(task_id_str)
+    except ValueError:
+        await ctx.api.answer_callback(callback_id)
+        return
+    t = await ctx.db.get_link_task(task_id)
+    if not t or int(t.get("reward", 0)) <= 0:
+        await ctx.api.answer_callback(callback_id, notification="Задание не найдено")
+        await _screen_subs(ctx, user_id)
+        return
+    if task_id in await ctx.db.list_user_link_claims(user_id):
+        await ctx.api.answer_callback(callback_id, notification="Награда за это задание уже получена")
+        await _screen_subs(ctx, user_id)
+        return
+    if not claim:
+        await ctx.api.answer_callback(callback_id)
+        await ctx.show_screen(
+            user_id,
+            f"🚀 *{esc(t['title'])}*\n\nВыполни задание и получи *+{t['reward']}* {GEM}.\n\n"
+            "1. Перейди по кнопке и сделай, что просит задание.\n"
+            "2. Вернись и нажми «✅ Я выполнил».",
+            kb.task_one(t),
+        )
+        return
+    granted, _bal = await ctx.db.claim_link_task(user_id, task_id, int(t["reward"]))
+    note = f"+{t['reward']} 💎 за задание!" if granted else "Награда уже была получена"
+    await ctx.api.answer_callback(callback_id, notification=note)
+    await _screen_subs(ctx, user_id)
+
+
 async def _buy(ctx: Context, user_id: int, parts: list[str], callback_id: str) -> None:
     pack = parts[1] if len(parts) > 1 else ""
     price = BUY_PACKS.get(pack)
@@ -472,7 +516,7 @@ async def _screen_history(ctx: Context, user_id: int) -> None:
     names = {
         "grant": "Бонус", "daily": "Ежедневная", "subscribe": "Подписка",
         "invite": "Реферал", "spend": "Списание", "buy": "Покупка",
-        "achievement": "Достижение", "revoke": "Отзыв награды",
+        "achievement": "Достижение", "revoke": "Отзыв награды", "task": "Задание",
     }
     lines = ["📊 *История операций*", ""]
     for r in rows:

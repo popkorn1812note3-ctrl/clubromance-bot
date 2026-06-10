@@ -115,6 +115,22 @@ CREATE TABLE IF NOT EXISTS subscription_claims (
     revoked_at INTEGER,
     PRIMARY KEY (user_id, chat_id)
 );
+
+CREATE TABLE IF NOT EXISTS link_tasks (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,    -- задания «по ссылке»: старт бота, гс-чат, раздача
+    title    TEXT    NOT NULL,
+    link     TEXT    NOT NULL,
+    reward   INTEGER NOT NULL DEFAULT 0,
+    added_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS link_task_claims (
+    user_id    INTEGER NOT NULL,
+    task_id    INTEGER NOT NULL,
+    reward     INTEGER NOT NULL,
+    claimed_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, task_id)
+);
 """
 
 
@@ -508,6 +524,63 @@ class DB:
         )
         await self.conn.commit()
         return take
+
+    # ── Задания «по ссылке» (старт бота / гс-чат / раздача) ───
+    async def add_link_task(self, title: str, link: str, reward: int) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO link_tasks (title, link, reward, added_at) VALUES (?,?,?,?)",
+            (title.strip(), link.strip(), max(0, int(reward)), _now()),
+        )
+        await self.conn.commit()
+        return int(cur.lastrowid or 0)
+
+    async def update_link_task(self, task_id: int, title: str, link: str, reward: int) -> None:
+        await self.conn.execute(
+            "UPDATE link_tasks SET title=?, link=?, reward=? WHERE id=?",
+            (title.strip(), link.strip(), max(0, int(reward)), task_id),
+        )
+        await self.conn.commit()
+
+    async def delete_link_task(self, task_id: int) -> None:
+        await self.conn.execute("DELETE FROM link_tasks WHERE id=?", (task_id,))
+        await self.conn.commit()
+
+    async def list_link_tasks(self) -> list[dict[str, Any]]:
+        cur = await self.conn.execute("SELECT * FROM link_tasks WHERE reward>0 ORDER BY added_at")
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_link_task(self, task_id: int) -> dict[str, Any] | None:
+        cur = await self.conn.execute("SELECT * FROM link_tasks WHERE id=?", (task_id,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def claim_link_task(self, user_id: int, task_id: int, reward: int) -> tuple[bool, int]:
+        """Выдать награду за ссылочное задание (один раз; проверки нет — на доверии).
+        Гонко-безопасно: ON CONFLICT DO NOTHING + rowcount. (выдано?, баланс)."""
+        cur = await self.conn.execute(
+            """INSERT INTO link_task_claims (user_id, task_id, reward, claimed_at)
+               VALUES (?,?,?,?) ON CONFLICT(user_id, task_id) DO NOTHING""",
+            (user_id, task_id, int(reward), _now()),
+        )
+        if cur.rowcount == 0:
+            await self.conn.commit()
+            u = await self.get_user(user_id)
+            return False, int(u["crystals"]) if u else 0
+        bal = await self.add_crystals(user_id, int(reward), "task", f"task:{task_id}")
+        return True, bal
+
+    async def list_user_link_claims(self, user_id: int) -> set[int]:
+        cur = await self.conn.execute(
+            "SELECT task_id FROM link_task_claims WHERE user_id=?", (user_id,)
+        )
+        return {int(r["task_id"]) for r in await cur.fetchall()}
+
+    async def link_task_summary(self) -> dict[int, int]:
+        """task_id -> сколько раз выдана награда (для админки)."""
+        cur = await self.conn.execute(
+            "SELECT task_id, COUNT(*) AS c FROM link_task_claims GROUP BY task_id"
+        )
+        return {int(r["task_id"]): int(r["c"]) for r in await cur.fetchall()}
 
     async def subscription_summary(self) -> dict[int, dict[str, int]]:
         """По каждому каналу-заданию: сколько выдач active / revoked (для админки)."""

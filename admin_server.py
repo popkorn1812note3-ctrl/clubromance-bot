@@ -244,6 +244,17 @@ document.querySelectorAll('.up-input').forEach(function(inp){
 document.querySelectorAll('form[data-confirm]').forEach(function(f){
   f.addEventListener('submit',function(e){ if(!confirm(f.getAttribute('data-confirm'))) e.preventDefault(); });
 });
+var ks=document.getElementById('kind-sel');
+if(ks){
+  var upd=function(){
+    var isCh=ks.value==='channel';
+    document.querySelectorAll('.kind-ch').forEach(function(e){e.style.display=isCh?'':'none'});
+    document.querySelectorAll('.kind-ln').forEach(function(e){e.style.display=isCh?'none':''});
+    var ci=document.getElementById('add-chat-id'); if(ci) ci.required=isCh;
+    var li=document.getElementById('add-link'); if(li) li.required=!isCh;
+  };
+  ks.addEventListener('change',upd); upd();
+}
 """
 
 FONT = "<link rel=preconnect href='https://fonts.googleapis.com'><link rel=preconnect href='https://fonts.gstatic.com' crossorigin><link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap' rel=stylesheet>"
@@ -594,42 +605,83 @@ async def subs_page(_: str = Depends(auth)):
             f"<button class='btn danger sm'>Удалить задание</button></form></div>"
         )
     if not channels:
-        rows = "<div class=empty>Заданий нет. Добавь канал ниже — игроки будут получать кристаллы за подписку.</div>"
+        rows = "<div class=empty>Каналов-заданий нет.</div>"
+
+    tasks = await c.db.list_link_tasks()
+    t_summary = await c.db.link_task_summary()
+    t_rows = ""
+    for t in tasks:
+        tid = t["id"]
+        t_rows += (
+            f"<div class=card><div class=chrow><div>"
+            f"<b>🚀 {esc(t['title'])}</b> <span class=tag>#{tid}</span>"
+            f"<div class=muted>{esc(t['link'])}</div>"
+            f"<div class=muted>выдано: {t_summary.get(tid, 0)}</div></div>"
+            f"<span class='pill no'>без проверки — на доверии</span></div>"
+            f"<form method=post action='/subs/task/{tid}/save' class=field style='margin-top:12px'>"
+            f"<input type=text name=title value='{esc(t['title'])}' placeholder='Название' required>"
+            f"<input type=text name=link value='{esc(t['link'])}' placeholder='https://max.ru/...' required>"
+            f"<label class=check>Награда 💎<input type=number name=reward value='{t['reward']}' min='0' style='max-width:100px'></label>"
+            f"<button class='btn ghost sm'>Сохранить</button></form>"
+            f"<form method=post action='/subs/task/{tid}/delete' data-confirm='Удалить задание «{esc(t['title'])}»?' style='margin-top:8px'>"
+            f"<button class='btn danger sm'>Удалить задание</button></form></div>"
+        )
+    if not tasks:
+        t_rows = "<div class=empty>Ссылочных заданий нет. Это «старт бота», вступление в чат, раздачи — любая ссылка.</div>"
 
     add = (
         "<form method=post action='/subs/add' class=card style='margin-top:14px'>"
-        "<div class=field><input type=number name=chat_id placeholder='chat_id канала (напр. -7488…)' required>"
-        "<input type=text name=title placeholder='Название канала'></div>"
-        "<div class=field><input type=text name=link placeholder='https://max.ru/...'>"
-        "<input type=number name=reward value='15' min='0' placeholder='Награда 💎' style='max-width:150px'>"
-        "<input type=number name=hold_days value='7' min='0' placeholder='Держать дней' style='max-width:150px'>"
+        "<div class=field><select name=kind id=kind-sel>"
+        "<option value=channel>📣 Подписка на канал (с проверкой)</option>"
+        "<option value=link>🚀 Старт бота / ссылка (без проверки)</option>"
+        "</select>"
+        "<input type=number name=chat_id id=add-chat-id class=kind-ch placeholder='chat_id канала (напр. -7488…)'>"
+        "<input type=text name=title placeholder='Название' required></div>"
+        "<div class=field><input type=text name=link id=add-link placeholder='https://max.ru/...'>"
+        "<input type=number name=reward value='15' min='0' placeholder='Награда 💎' style='max-width:140px'>"
+        "<input type=number name=hold_days value='7' min='0' class=kind-ch placeholder='Держать дней' style='max-width:140px'>"
         "<button class='btn primary'>Добавить задание</button></div>"
-        "<div class=muted>Чтобы проверка подписки работала, бот должен быть <b>админом</b> канала. "
-        "«Держать дней» — через сколько дней проверим, не отписался ли игрок (0 — награду не отзывать).</div></form>"
+        "<div class='muted kind-ch'>Канал: бот должен быть <b>админом</b>, иначе подписку не проверить. "
+        "«Держать дней» — через сколько проверим, не отписался ли игрок (0 — не отзывать).</div>"
+        "<div class='muted kind-ln'>Ссылка: проверить выполнение нельзя (MAX не даёт смотреть чужих ботов) — "
+        "награда выдаётся по нажатию «Я выполнил», один раз на игрока. Подходит для ботов, гс-чатов, раздач.</div>"
+        "</form>"
     )
 
     body = (
         "<a class=back href='/'>← На главную</a>"
-        "<div class=hero><h1>Подписки за награду</h1>"
-        "<p class=sub>Игрок подписывается на канал → получает кристаллы. Отпишется в срок удержания → награду заберём</p></div>"
-        f"<section><div class=sec-head><h2>Каналы-задания</h2>"
-        "<span class=hint>награда и срок удержания настраиваются на каждый канал</span></div>"
-        f"{rows}{add}</section>"
+        "<div class=hero><h1>Задания</h1>"
+        "<p class=sub>Подписки на каналы (с проверкой и отзывом) и переходы по ссылке (старт бота, чаты, раздачи)</p></div>"
+        f"<section><div class=sec-head><h2>Каналы — подписка за награду</h2>"
+        "<span class=hint>проверяем подписку; отписался раньше срока — награду заберём</span></div>"
+        f"{rows}</section>"
+        f"<section><div class=sec-head><h2>Задания по ссылке</h2>"
+        "<span class=hint>старт бота, гс-чат, раздача — выдача по «Я выполнил»</span></div>"
+        f"{t_rows}</section>"
+        f"<section><div class=sec-head><h2>Добавить задание</h2></div>{add}</section>"
     )
-    return page("Задания — подписки за награду", body, "subs")
+    return page("Задания", body, "subs")
 
 
 @app.post("/subs/add")
 async def subs_add(
-    chat_id: int = Form(...),
+    kind: str = Form("channel"),
+    chat_id: str = Form(""),
     title: str = Form(""),
     link: str = Form(""),
     reward: int = Form(0),
     hold_days: int = Form(0),
     _: str = Depends(auth),
 ):
+    if kind == "link":
+        if link.strip():
+            await ctx().db.add_link_task(title.strip() or "Задание", link.strip(), max(0, reward))
+        return RedirectResponse("/subs", status_code=303)
+    cid = chat_id.strip()
+    if not cid.lstrip("-").isdigit():
+        raise HTTPException(400, "chat_id канала обязателен и должен быть числом")
     await ctx().db.upsert_reward_channel(
-        chat_id, title.strip(), link.strip(), max(0, reward), max(0, hold_days)
+        int(cid), title.strip(), link.strip(), max(0, reward), max(0, hold_days)
     )
     return RedirectResponse("/subs", status_code=303)
 
@@ -637,6 +689,26 @@ async def subs_add(
 @app.post("/subs/{chat_id}/delete")
 async def subs_delete(chat_id: int, _: str = Depends(auth)):
     await ctx().db.remove_channel(chat_id)
+    return RedirectResponse("/subs", status_code=303)
+
+
+@app.post("/subs/task/{task_id}/save")
+async def subs_task_save(
+    task_id: int,
+    title: str = Form(""),
+    link: str = Form(""),
+    reward: int = Form(0),
+    _: str = Depends(auth),
+):
+    if await ctx().db.get_link_task(task_id) is None:
+        raise HTTPException(404)
+    await ctx().db.update_link_task(task_id, title.strip() or "Задание", link.strip(), max(0, reward))
+    return RedirectResponse("/subs", status_code=303)
+
+
+@app.post("/subs/task/{task_id}/delete")
+async def subs_task_delete(task_id: int, _: str = Depends(auth)):
+    await ctx().db.delete_link_task(task_id)
     return RedirectResponse("/subs", status_code=303)
 
 
