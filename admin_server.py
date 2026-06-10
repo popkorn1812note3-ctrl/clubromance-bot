@@ -24,6 +24,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from app.bootstrap import build_context, setup_logging
 from app.config import ROOT, load_config
 from app.runtime import Context
+from app.tasks import recheck_subscriptions
 
 log = logging.getLogger("admin")
 cfg = load_config()
@@ -383,27 +384,75 @@ async def stats_page(_: str = Depends(auth)):
     )
     warn = "" if channels else "<div class=empty style='margin-top:14px'>⚠️ Гейт выключен — каналов нет. «Прошли подписку» станет осмысленным после добавления канала.</div>"
 
+    # Перепроверка подписок (recheck, как в OPBOT)
+    refresh = ""
+    if _recheck["running"]:
+        refresh = "<meta http-equiv=refresh content=3>"
+        ch_done = sum(1 for v in _recheck["channels"].values() if v is not None)
+        stage = esc(_recheck["stage"])
+        rc_body = (
+            f"<b>↻ Перепроверка идёт…</b> <span class=muted>стадия: {stage} · "
+            f"каналов прочитано {ch_done}/{len(_recheck['channels']) or '…'} · "
+            f"юзеров сверено {_recheck['done']}/{_recheck['total']}</span>"
+            "<form method=post action='/stats/recheck/stop' style='margin-top:10px'>"
+            "<button class='btn danger sm'>⛔ Остановить</button></form>"
+        )
+    else:
+        last = ""
+        if _recheck["finished_at"]:
+            last = f"<span class=muted> · последняя: {fmt_ts(_recheck['finished_at'])}</span>"
+        rc_body = (
+            "<div class=chrow><div><b>↻ Перепроверка подписок</b>"
+            f"<div class=muted>скачает участников каждого канала и сверит всех юзеров; "
+            f"обновит срез по каналам и статус гейта{last}</div></div>"
+            "<form method=post action='/stats/recheck'>"
+            "<button class='btn primary sm'>Запустить</button></form></div>"
+        )
+    recheck_card = f"<div class=card style='margin-top:14px'>{rc_body}</div>"
+
+    sub_stats = await c.db.channel_subscription_stats()
     ch_html = ""
     for ch in channels:
-        chat = await _api_call(c.api.get_chat(ch["chat_id"]))
+        cid = ch["chat_id"]
+        chat = await _api_call(c.api.get_chat(cid))
         size = chat.get("participants_count", "?") if chat else "?"
-        me = await _api_call(c.api.get_my_membership(ch["chat_id"]))
+        me = await _api_call(c.api.get_my_membership(cid))
         admin = bool(me and (me.get("is_admin") or me.get("is_owner")))
         badge = ("<span class='pill ok'>✓ бот админ — проверка работает</span>" if admin
                  else "<span class='pill warn'>⚠ бот не админ — подписку не проверить</span>")
+        ss = sub_stats.get(cid)
+        if ss and ss["checked"]:
+            pct = round(100 * ss["subscribed"] / ss["checked"])
+            srow = (f"<div class=muted>наших юзеров подписано: <b style='color:var(--text)'>{ss['subscribed']}</b>"
+                    f" из {ss['checked']} ({pct}%) · проверено {fmt_ts(ss['last_checked'])}</div>")
+        else:
+            srow = "<div class=muted>срез подписок появится после перепроверки ↻</div>"
         ch_html += (f"<div class=card><div class=chrow><div><b>📢 {esc(ch['title'] or 'Канал')}</b> "
-                    f"<span class=tag>{ch['chat_id']}</span><div class=muted>{esc(size)} подписчиков</div></div>"
-                    f"{badge}</div></div>")
+                    f"<span class=tag>{cid}</span><div class=muted>{esc(size)} подписчиков в канале</div>"
+                    f"{srow}</div>{badge}</div></div>")
     if not channels:
         ch_html = "<div class=empty>Каналов нет.</div>"
 
     body = (
         "<a class=back href='/'>← Назад</a>"
         "<div class=hero><h1>Статистика подписки</h1><p class=sub>Воронка обязательной подписки (ОП)</p></div>"
-        f"<div class=stats-grid>{cards}</div>{newcard}{warn}"
+        f"{refresh}<div class=stats-grid>{cards}</div>{newcard}{warn}{recheck_card}"
         "<section><div class=sec-head><h2>Каналы</h2></div>" + ch_html + "</section>"
     )
     return page("Статистика ОП", body, "stats")
+
+
+@app.post("/stats/recheck")
+async def stats_recheck(_: str = Depends(auth)):
+    if not _recheck["running"]:
+        _spawn_bg(recheck_subscriptions(ctx(), _recheck))
+    return RedirectResponse("/stats", status_code=303)
+
+
+@app.post("/stats/recheck/stop")
+async def stats_recheck_stop(_: str = Depends(auth)):
+    _recheck["stop"] = True
+    return RedirectResponse("/stats", status_code=303)
 
 
 @app.get("/story/{sid}", response_class=HTMLResponse)
@@ -725,6 +774,15 @@ async def subs_task_delete(task_id: int, _: str = Depends(auth)):
 _bcast: dict = {"running": False, "sent": 0, "errors": 0, "total": 0, "started_at": 0}
 # Ссылки на фоновые задачи — иначе Python может собрать task до завершения (грабля Г12 OPBOT).
 _bg_tasks: set = set()
+# Состояние массовой перепроверки подписок ОП (см. tasks.recheck_subscriptions).
+_recheck: dict = {"running": False, "stop": False, "stage": "", "done": 0, "total": 0,
+                  "channels": {}, "started_at": 0, "finished_at": 0}
+
+
+def _spawn_bg(coro) -> None:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 
 async def _run_broadcast(uids: list[int], text: str, image: dict | None) -> None:
@@ -824,9 +882,7 @@ async def broadcast_send(
         raise HTTPException(400, "Пустой текст")
     image = await _bcast_image(file)
     uids = await ctx().db.broadcast_user_ids(segment, story_id.strip())
-    task = asyncio.create_task(_run_broadcast(uids, text, image))
-    _bg_tasks.add(task)
-    task.add_done_callback(_bg_tasks.discard)
+    _spawn_bg(_run_broadcast(uids, text, image))
     return RedirectResponse("/broadcast", status_code=303)
 
 

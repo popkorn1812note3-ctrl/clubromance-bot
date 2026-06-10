@@ -65,3 +65,64 @@ async def retention_loop(ctx: Context, interval: int = RETENTION_INTERVAL) -> No
         except Exception:  # noqa: BLE001 — цикл не должен падать
             log.exception("retention sweep упал")
         await asyncio.sleep(interval)
+
+
+async def recheck_subscriptions(ctx: Context, state: dict) -> None:
+    """Массовая перепроверка подписок ОП (как recheck в OPBOT): по каждому каналу
+    скачиваем ВЕСЬ список участников одним проходом (а не is_member на юзера —
+    бережём общий rate-limit токена), затем сверяем всех юзеров локально, пишем
+    срез в user_subscriptions и пересчитываем gate_passed.
+
+    state — общий dict для прогресса/остановки: running, stage, done, total,
+    stop (флаг остановки), channels {chat_id: участников|None}, finished_at.
+    Каналы, где бот не админ, пропускаются (как в _verify_all — не блокируют)."""
+    now = int(time.time())
+    state.update(running=True, stop=False, stage="каналы", done=0, total=0,
+                 channels={}, started_at=now, finished_at=0)
+    try:
+        channels = await ctx.db.list_required_channels()
+        users = await ctx.db.all_user_ids()
+        state["total"] = len(users)
+
+        member_sets: dict[int, set[int]] = {}
+        for ch in channels:
+            if state["stop"]:
+                log.info("recheck: остановлен на стадии каналов")
+                return
+            cid = ch["chat_id"]
+            try:
+                member_sets[cid] = await ctx.api.list_chat_member_ids(cid)
+                state["channels"][cid] = len(member_sets[cid])
+                log.info("recheck: канал %s — %d участников", cid, len(member_sets[cid]))
+            except Exception as e:  # noqa: BLE001 — не админ/канал удалён: пропускаем
+                state["channels"][cid] = None
+                log.warning("recheck: канал %s не прочитать (%s) — пропуск", cid, e)
+
+        state["stage"] = "юзеры"
+        sub_rows: list[tuple[int, int, int, int]] = []
+        gate_rows: list[tuple[int, int, int]] = []
+        for i, uid in enumerate(users):
+            if state["stop"]:
+                log.info("recheck: остановлен на %d/%d", i, len(users))
+                return
+            ok_all = True
+            for cid, ids in member_sets.items():
+                sub = uid in ids
+                sub_rows.append((uid, cid, 1 if sub else 0, now))
+                ok_all = ok_all and sub
+            gate_rows.append((1 if ok_all else 0, now, uid))
+            state["done"] = i + 1
+            if i % 500 == 499:
+                await asyncio.sleep(0)  # отдаём loop, чтобы не блокировать бота
+
+        state["stage"] = "запись"
+        await ctx.db.bulk_set_subscriptions(sub_rows)
+        await ctx.db.bulk_set_gate(gate_rows)
+        passed = sum(1 for g, _, _ in gate_rows if g)
+        log.info("recheck: готово — %d юзеров, прошли гейт %d, каналов проверено %d/%d",
+                 len(users), passed, len(member_sets), len(channels))
+    except Exception:  # noqa: BLE001
+        log.exception("recheck упал")
+    finally:
+        state["running"] = False
+        state["finished_at"] = int(time.time())

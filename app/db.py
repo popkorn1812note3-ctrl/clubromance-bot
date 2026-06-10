@@ -148,6 +148,14 @@ CREATE TABLE IF NOT EXISTS chapter_rewards (
     at       INTEGER NOT NULL,
     PRIMARY KEY (user_id, story_id, chapter)
 );
+
+CREATE TABLE IF NOT EXISTS user_subscriptions (
+    user_id    INTEGER NOT NULL,   -- срез «кто на какой ОП-канал подписан» (наполняется recheck'ом)
+    chat_id    INTEGER NOT NULL,
+    subscribed INTEGER NOT NULL DEFAULT 0,
+    checked_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, chat_id)
+);
 """
 
 
@@ -440,6 +448,51 @@ class DB:
             "UPDATE users SET gate_passed=?, gate_checked_at=? WHERE user_id=?", (value, _now(), user_id)
         )
         await self.conn.commit()
+
+    async def all_user_ids(self) -> list[int]:
+        cur = await self.conn.execute("SELECT user_id FROM users")
+        return [int(r["user_id"]) for r in await cur.fetchall()]
+
+    async def bulk_set_subscriptions(self, rows: list[tuple[int, int, int, int]]) -> None:
+        """Массовая запись среза подписок: (user_id, chat_id, subscribed, checked_at)."""
+        if not rows:
+            return
+        await self.conn.executemany(
+            """INSERT INTO user_subscriptions (user_id, chat_id, subscribed, checked_at)
+               VALUES (?,?,?,?)
+               ON CONFLICT(user_id, chat_id) DO UPDATE SET
+                   subscribed=excluded.subscribed, checked_at=excluded.checked_at""",
+            rows,
+        )
+        await self.conn.commit()
+
+    async def bulk_set_gate(self, rows: list[tuple[int, int, int]]) -> None:
+        """Массовое обновление гейта: (gate_passed, gate_checked_at, user_id)."""
+        if not rows:
+            return
+        await self.conn.executemany(
+            "UPDATE users SET gate_passed=?, gate_checked_at=? WHERE user_id=?", rows
+        )
+        await self.conn.commit()
+
+    async def channel_subscription_stats(self) -> dict[int, dict[str, int]]:
+        """По каждому каналу: сколько юзеров подписано / проверено + дата последней проверки.
+        Агрегируем в SQL (грабля Г30 OPBOT: не материализовать базу в Python)."""
+        cur = await self.conn.execute(
+            """SELECT chat_id,
+                      SUM(subscribed)  AS subscribed,
+                      COUNT(*)         AS checked,
+                      MAX(checked_at)  AS last_checked
+               FROM user_subscriptions GROUP BY chat_id"""
+        )
+        return {
+            int(r["chat_id"]): {
+                "subscribed": int(r["subscribed"] or 0),
+                "checked": int(r["checked"] or 0),
+                "last_checked": int(r["last_checked"] or 0),
+            }
+            for r in await cur.fetchall()
+        }
 
     async def gate_stats(self) -> dict[str, int]:
         """Сводка по обязательной подписке: всего юзеров, прошли гейт, новые за день/неделю."""

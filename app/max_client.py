@@ -238,6 +238,29 @@ class MaxClient:
         # Честная проверка: постраничный обход участников (до ~5000).
         return await self._scan_member(chat_id, user_id)
 
+    async def list_chat_member_ids(
+        self, chat_id: int, *, delay: float = 0.2, max_pages: int = 500
+    ) -> set[int]:
+        """ВСЕ user_id участников канала (для массового recheck: один проход по каналу
+        вместо запроса на каждого юзера). delay щадит общий rate-limit токена
+        (бот и админка делят квоту — грабля Г16 OPBOT). Бросает ChatDenied, если бот не админ."""
+        out: set[int] = set()
+        marker: int | None = None
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"count": 100}
+            if marker is not None:
+                params["marker"] = marker
+            data = await self._request("GET", f"/chats/{chat_id}/members", params=params)
+            members = data.get("members", []) if isinstance(data, dict) else []
+            out.update(int(m["user_id"]) for m in members if m.get("user_id") is not None)
+            marker = data.get("marker") if isinstance(data, dict) else None
+            if not marker or not members:
+                return out
+            if delay:
+                await asyncio.sleep(delay)
+        log.warning("list_chat_member_ids: канал %s — упёрлись в лимит %s страниц", chat_id, max_pages)
+        return out
+
     async def _scan_member(self, chat_id: int, user_id: int, max_pages: int = 50) -> bool:
         marker: int | None = None
         for _ in range(max_pages):
