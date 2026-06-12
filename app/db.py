@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
     daily_streak   INTEGER NOT NULL DEFAULT 0,
     subscribed     INTEGER NOT NULL DEFAULT 0,
     referred_by    INTEGER,
+    source         TEXT,              -- slug кампании (?start=src_<slug>), атрибуция при регистрации
     pending        TEXT,
     gate_passed    INTEGER NOT NULL DEFAULT 0,
     gate_checked_at INTEGER NOT NULL DEFAULT 0,
@@ -156,6 +157,12 @@ CREATE TABLE IF NOT EXISTS user_subscriptions (
     checked_at INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, chat_id)
 );
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    slug       TEXT PRIMARY KEY,   -- метка источника: ссылка ?start=src_<slug>
+    name       TEXT,
+    created_at INTEGER NOT NULL
+);
 """
 
 
@@ -192,6 +199,8 @@ class DB:
             await self._conn.execute("ALTER TABLE users ADD COLUMN gate_checked_at INTEGER NOT NULL DEFAULT 0")
         if "daily_streak" not in ucols:
             await self._conn.execute("ALTER TABLE users ADD COLUMN daily_streak INTEGER NOT NULL DEFAULT 0")
+        if "source" not in ucols:
+            await self._conn.execute("ALTER TABLE users ADD COLUMN source TEXT")
 
         chcols = await table_cols("channels")
         if "reward" not in chcols:
@@ -404,6 +413,60 @@ class DB:
         cur = await self.conn.execute("SELECT COUNT(*) AS c FROM referrals WHERE inviter_id=?", (user_id,))
         row = await cur.fetchone()
         return int(row["c"]) if row else 0
+
+    # ── Кампании / трекинг источников (?start=src_<slug>) ─────
+    @staticmethod
+    def valid_slug(slug: str) -> bool:
+        s = (slug or "").strip()
+        return bool(s) and len(s) <= 32 and all(c.isalnum() or c in "-_" for c in s) and s.isascii()
+
+    async def create_campaign(self, slug: str, name: str = "") -> bool:
+        """False, если slug занят или невалиден."""
+        if not self.valid_slug(slug):
+            return False
+        cur = await self.conn.execute(
+            "INSERT INTO campaigns (slug, name, created_at) VALUES (?,?,?) ON CONFLICT(slug) DO NOTHING",
+            (slug.strip(), name.strip(), _now()),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def delete_campaign(self, slug: str) -> None:
+        """Удаляет кампанию из списка; source у юзеров остаётся (история атрибуции)."""
+        await self.conn.execute("DELETE FROM campaigns WHERE slug=?", (slug,))
+        await self.conn.commit()
+
+    async def set_user_source(self, user_id: int, slug: str) -> None:
+        """Атрибуция: source пишется один раз (первый источник побеждает)."""
+        await self.conn.execute(
+            "UPDATE users SET source=? WHERE user_id=? AND source IS NULL", (slug, user_id)
+        )
+        await self.conn.commit()
+
+    async def campaign_stats(self) -> list[dict[str, Any]]:
+        """Кампании + воронка: регистраций → прошли ОП → начали историю → завершили.
+        Включает и метки, по которым пришли юзеры без созданной кампании (славы из ссылок)."""
+        cur = await self.conn.execute(
+            """SELECT c.slug AS slug, c.name AS name, c.created_at AS created_at,
+                      COALESCE(s.regs, 0) AS regs, COALESCE(s.passed, 0) AS passed,
+                      COALESCE(s.started, 0) AS started, COALESCE(s.completed, 0) AS completed
+               FROM campaigns c
+               LEFT JOIN (
+                   SELECT u.source AS slug, COUNT(*) AS regs, SUM(u.gate_passed) AS passed,
+                          SUM(EXISTS(SELECT 1 FROM progress p WHERE p.user_id=u.user_id)) AS started,
+                          SUM(EXISTS(SELECT 1 FROM completions co WHERE co.user_id=u.user_id)) AS completed
+                   FROM users u WHERE u.source IS NOT NULL GROUP BY u.source
+               ) s ON s.slug = c.slug
+               UNION ALL
+               SELECT u.source, NULL, NULL, COUNT(*), SUM(u.gate_passed),
+                      SUM(EXISTS(SELECT 1 FROM progress p WHERE p.user_id=u.user_id)),
+                      SUM(EXISTS(SELECT 1 FROM completions co WHERE co.user_id=u.user_id))
+               FROM users u
+               WHERE u.source IS NOT NULL AND u.source NOT IN (SELECT slug FROM campaigns)
+               GROUP BY u.source
+               ORDER BY regs DESC, created_at DESC"""
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
     async def referral_stats(self) -> dict[str, int]:
         """Сводка реферальной программы (агрегация в SQL): приглашено всего/за день/неделю,

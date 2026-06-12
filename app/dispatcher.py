@@ -34,6 +34,17 @@ async def _handle_referral(ctx: Context, user_id: int, payload: str | None) -> N
         )
 
 
+async def _handle_source(ctx: Context, user_id: int, payload: str | None, *, is_new: bool) -> None:
+    """Трекинг кампаний: ссылка ?start=src_<slug> у НОВОГО юзера пишет source
+    (атрибуция по регистрации; повторные заходы и чужие метки ничего не меняют)."""
+    if not is_new or not payload or not payload.startswith("src_"):
+        return
+    slug = payload[4:]
+    if ctx.db.valid_slug(slug):
+        await ctx.db.set_user_source(user_id, slug)
+        log.info("кампания: uid=%s source=%s", user_id, slug)
+
+
 async def dispatch(ctx: Context, update: dict[str, Any]) -> None:
     """Обрабатывает один апдейт MAX. Безопасна к исключениям (логирует, не падает)."""
     try:
@@ -78,8 +89,10 @@ async def _dispatch(ctx: Context, update: dict[str, Any]) -> None:
         if uid is None:
             return
         log.info("bot_started uid=%s payload=%s", uid, update.get("payload"))
+        is_new = await ctx.db.get_user(uid) is None  # до ensure_user: регистрация или перезаход
         await ctx.db.ensure_user(uid, _full_name(user), user.get("username") or "")
         await _handle_referral(ctx, uid, update.get("payload"))
+        await _handle_source(ctx, uid, update.get("payload"), is_new=is_new)
         if await _gate_block(ctx, uid, force=True):  # вход в бота — всегда реальная проверка ОП
             await menus.show_gate(ctx, uid, force_new=True)
             return

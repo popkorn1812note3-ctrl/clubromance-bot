@@ -250,6 +250,15 @@ document.querySelectorAll('form[data-confirm]').forEach(function(f){
 document.querySelectorAll('button[data-confirm-submit]').forEach(function(b){
   b.addEventListener('click',function(e){ if(!confirm('Отправить рассылку всем выбранным получателям?')) e.preventDefault(); });
 });
+document.querySelectorAll('button[data-copy]').forEach(function(b){
+  b.addEventListener('click',function(){
+    var v=b.getAttribute('data-copy');
+    function done(){ var t=b.textContent; b.textContent='✓'; setTimeout(function(){b.textContent=t;},900); }
+    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(v).then(done); }
+    else{ var i=document.createElement('input'); i.value=v; document.body.appendChild(i); i.select();
+          document.execCommand('copy'); document.body.removeChild(i); done(); }
+  });
+});
 var ks=document.getElementById('kind-sel');
 if(ks){
   var upd=function(){
@@ -274,7 +283,7 @@ def page(title: str, body: str, active: str = "") -> HTMLResponse:
         "<div class=topbar><div class=bar>"
         "<a class=brand href='/'><span class=logo>♥</span> <span class=nm>Club Romance</span> "
         "<span class=badge-soft>admin</span></a>"
-        f"<nav class=nav>{nav('/', 'Главная', 'home')}{nav('/users', 'Пользователи', 'users')}{nav('/subs', 'Задания', 'subs')}{nav('/broadcast', 'Рассылка', 'bcast')}{nav('/stats', 'Статистика', 'stats')}</nav>"
+        f"<nav class=nav>{nav('/', 'Главная', 'home')}{nav('/users', 'Пользователи', 'users')}{nav('/subs', 'Задания', 'subs')}{nav('/campaigns', 'Кампании', 'camp')}{nav('/broadcast', 'Рассылка', 'bcast')}{nav('/stats', 'Статистика', 'stats')}</nav>"
         "</div></div>"
     )
     return HTMLResponse(
@@ -826,6 +835,78 @@ async def subs_task_delete(task_id: int, _: str = Depends(auth)):
     return RedirectResponse("/subs", status_code=303)
 
 
+# ── Кампании / трекинг источников ────────────────────────────
+@app.get("/campaigns", response_class=HTMLResponse)
+async def campaigns_page(_: str = Depends(auth)):
+    c = ctx()
+    bot = c.bot_username
+    rows = await c.db.campaign_stats()
+
+    def pct(n: int, total: int) -> str:
+        return f"{round(100 * n / total)}%" if total else "0%"
+
+    items = ""
+    for r in rows:
+        slug = esc(r["slug"])
+        regs = int(r["regs"])
+        link_url = f"https://max.ru/{bot}?start=src_{r['slug']}" if bot else f"?start=src_{r['slug']}"
+        unknown = "" if r["created_at"] is not None else " <span class='pill warn'>метка без кампании</span>"
+        funnel = (
+            f"<div class=muted>👤 регистраций: <b style='color:var(--text)'>{regs}</b> · "
+            f"🔓 прошли ОП: <b style='color:var(--text)'>{r['passed']}</b> ({pct(r['passed'], regs)}) · "
+            f"📖 начали историю: <b style='color:var(--text)'>{r['started']}</b> ({pct(r['started'], regs)}) · "
+            f"🏁 завершили: <b style='color:var(--text)'>{r['completed']}</b> ({pct(r['completed'], regs)})</div>"
+        )
+        items += (
+            f"<div class=card><div class=chrow><div style='min-width:0'>"
+            f"<b><span class=tag>{slug}</span> {esc(r['name'] or '')}</b>{unknown}{funnel}"
+            f"<div class=muted style='margin-top:6px;overflow:hidden;text-overflow:ellipsis'>{esc(link_url)}</div></div>"
+            f"<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+            f"<button class='btn ghost sm' data-copy='{esc(link_url)}'>📋 Копировать</button>"
+            + (f"<form method=post action='/campaigns/{slug}/delete' data-confirm='Удалить кампанию «{slug}»? "
+               f"Источник у уже пришедших юзеров сохранится.'>"
+               f"<button class='btn danger sm'>Удалить</button></form>" if r["created_at"] is not None else "")
+            + "</div></div></div>"
+        )
+    if not rows:
+        items = "<div class=empty>Кампаний нет. Создай первую — получишь ссылку для рекламы.</div>"
+
+    hint_bot = "" if bot else ("<div class=empty style='margin-bottom:14px'>⚠️ BOT_USERNAME не задан в .env — "
+                               "ссылки показываются без адреса бота.</div>")
+    add = (
+        "<form method=post action='/campaigns/add' class=card style='margin-top:14px'>"
+        "<div class=field><input type=text name=slug placeholder='slug: tiktok_dec25 (латиница/цифры/-/_, до 32)' required>"
+        "<input type=text name=name placeholder='Название для себя (необязательно)'>"
+        "<button class='btn primary'>Создать кампанию</button></div>"
+        "<div class=muted>Ссылка вида <span class=tag>https://max.ru/&lt;бот&gt;?start=src_&lt;slug&gt;</span> — "
+        "у нового юзера, пришедшего по ней, источник запишется в профиль (первая метка побеждает).</div></form>"
+    )
+
+    body = (
+        "<a class=back href='/'>← На главную</a>"
+        "<div class=hero><h1>Кампании</h1>"
+        "<p class=sub>Трекинг источников: сколько пришло с каждой рекламной ссылки и что они сделали</p></div>"
+        f"{hint_bot}<section><div class=sec-head><h2>Источники</h2>"
+        "<span class=hint>воронка: регистрация → ОП → начали историю → завершили</span></div>"
+        f"{items}{add}</section>"
+    )
+    return page("Кампании", body, "camp")
+
+
+@app.post("/campaigns/add")
+async def campaign_add(slug: str = Form(...), name: str = Form(""), _: str = Depends(auth)):
+    ok = await ctx().db.create_campaign(slug.strip(), name.strip())
+    if not ok:
+        raise HTTPException(400, "Slug занят или невалиден: латиница/цифры/-/_, до 32 символов")
+    return RedirectResponse("/campaigns", status_code=303)
+
+
+@app.post("/campaigns/{slug}/delete")
+async def campaign_delete(slug: str, _: str = Depends(auth)):
+    await ctx().db.delete_campaign(slug)
+    return RedirectResponse("/campaigns", status_code=303)
+
+
 # ── Рассылка ─────────────────────────────────────────────────
 _bcast: dict = {"running": False, "sent": 0, "errors": 0, "total": 0, "started_at": 0}
 # Ссылки на фоновые задачи — иначе Python может собрать task до завершения (грабля Г12 OPBOT).
@@ -1030,6 +1111,7 @@ async def user_detail(uid: int, _: str = Depends(auth)):
         f"<span class=k>Ежедневная</span><span>{fmt_ts(u['last_daily'])}</span>"
         f"<span class=k>Пригласил</span><span>{u['referred_by'] or '—'}</span>"
         f"<span class=k>Рефералов</span><span>{refs}</span>"
+        f"<span class=k>Источник</span><span>{('<span class=tag>' + esc(u['source']) + '</span>') if u.get('source') else '—'}</span>"
         f"<span class=k>Регистрация</span><span>{fmt_ts(u['created_at'])}</span>"
         "</div>"
     )
