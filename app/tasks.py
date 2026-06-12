@@ -78,11 +78,13 @@ async def recheck_subscriptions(ctx: Context, state: dict) -> None:
     Каналы, где бот не админ, пропускаются (как в _verify_all — не блокируют)."""
     now = int(time.time())
     state.update(running=True, stop=False, stage="каналы", done=0, total=0,
-                 channels={}, started_at=now, finished_at=0)
+                 channels={}, current=None, started_at=now, finished_at=0)
+    max_pages = int(state.get("max_pages") or 5000)  # потолок ~500k участников на канал
     try:
         channels = await ctx.db.list_required_channels()
         users = await ctx.db.all_user_ids()
         state["total"] = len(users)
+        state["channels"] = {ch["chat_id"]: None for ch in channels}  # прогресс «0/N» виден сразу
 
         member_sets: dict[int, set[int]] = {}
         for ch in channels:
@@ -90,13 +92,43 @@ async def recheck_subscriptions(ctx: Context, state: dict) -> None:
                 log.info("recheck: остановлен на стадии каналов")
                 return
             cid = ch["chat_id"]
+            expected = None
             try:
-                member_sets[cid] = await ctx.api.list_chat_member_ids(cid)
-                state["channels"][cid] = len(member_sets[cid])
-                log.info("recheck: канал %s — %d участников", cid, len(member_sets[cid]))
+                chat = await ctx.api.get_chat(cid)
+                expected = chat.get("participants_count")
+            except Exception:  # noqa: BLE001
+                pass
+            ids: set[int] = set()
+            pages = 0
+            truncated = False
+            try:
+                async for page in ctx.api.iter_chat_member_pages(cid):
+                    ids |= page
+                    pages += 1
+                    state["current"] = {"chat_id": cid, "title": ch.get("title") or "",
+                                        "pages": pages, "collected": len(ids), "expected": expected}
+                    if state["stop"]:
+                        log.info("recheck: остановлен на канале %s (страница %d)", cid, pages)
+                        return
+                    if pages >= max_pages:
+                        truncated = True
+                        break
             except Exception as e:  # noqa: BLE001 — не админ/канал удалён: пропускаем
                 state["channels"][cid] = None
                 log.warning("recheck: канал %s не прочитать (%s) — пропуск", cid, e)
+                continue
+            finally:
+                state["current"] = None
+            if truncated:
+                # Недокачанный список НЕЛЬЗЯ использовать: реально подписанные за пределом
+                # потолка были бы помечены неподписанными. Канал пропускаем целиком.
+                state["channels"][cid] = None
+                log.warning("recheck: канал %s больше %d страниц — пропуск (поднимите потолок)",
+                            cid, max_pages)
+                continue
+            member_sets[cid] = ids
+            state["channels"][cid] = len(ids)
+            log.info("recheck: канал %s — %d участников (%d страниц)", cid, len(ids), pages)
 
         state["stage"] = "юзеры"
         sub_rows: list[tuple[int, int, int, int]] = []

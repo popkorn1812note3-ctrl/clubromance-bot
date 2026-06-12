@@ -238,27 +238,37 @@ class MaxClient:
         # Честная проверка: постраничный обход участников (до ~5000).
         return await self._scan_member(chat_id, user_id)
 
-    async def list_chat_member_ids(
-        self, chat_id: int, *, delay: float = 0.2, max_pages: int = 500
-    ) -> set[int]:
-        """ВСЕ user_id участников канала (для массового recheck: один проход по каналу
-        вместо запроса на каждого юзера). delay щадит общий rate-limit токена
-        (бот и админка делят квоту — грабля Г16 OPBOT). Бросает ChatDenied, если бот не админ."""
-        out: set[int] = set()
+    async def iter_chat_member_pages(self, chat_id: int, *, delay: float = 0.1):
+        """Постранично отдаёт set'ы user_id участников канала (страница ~100).
+        Потоковый вариант для массового recheck: вызывающий контролирует прогресс,
+        остановку и потолок страниц. delay щадит общий rate-limit токена (бот и
+        админка делят квоту — грабля Г16 OPBOT). Бросает ChatDenied, если бот не админ."""
         marker: int | None = None
-        for _ in range(max_pages):
+        while True:
             params: dict[str, Any] = {"count": 100}
             if marker is not None:
                 params["marker"] = marker
             data = await self._request("GET", f"/chats/{chat_id}/members", params=params)
             members = data.get("members", []) if isinstance(data, dict) else []
-            out.update(int(m["user_id"]) for m in members if m.get("user_id") is not None)
+            yield {int(m["user_id"]) for m in members if m.get("user_id") is not None}
             marker = data.get("marker") if isinstance(data, dict) else None
             if not marker or not members:
-                return out
+                return
             if delay:
                 await asyncio.sleep(delay)
-        log.warning("list_chat_member_ids: канал %s — упёрлись в лимит %s страниц", chat_id, max_pages)
+
+    async def list_chat_member_ids(
+        self, chat_id: int, *, delay: float = 0.1, max_pages: int = 5000
+    ) -> set[int]:
+        """ВСЕ user_id участников канала (обёртка над iter_chat_member_pages)."""
+        out: set[int] = set()
+        pages = 0
+        async for ids in self.iter_chat_member_pages(chat_id, delay=delay):
+            out |= ids
+            pages += 1
+            if pages >= max_pages:
+                log.warning("list_chat_member_ids: канал %s — лимит %s страниц", chat_id, max_pages)
+                break
         return out
 
     async def _scan_member(self, chat_id: int, user_id: int, max_pages: int = 50) -> bool:

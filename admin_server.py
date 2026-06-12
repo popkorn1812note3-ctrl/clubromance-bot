@@ -427,10 +427,17 @@ async def stats_page(_: str = Depends(auth)):
         refresh = "<meta http-equiv=refresh content=3>"
         ch_done = sum(1 for v in _recheck["channels"].values() if v is not None)
         stage = esc(_recheck["stage"])
+        cur = _recheck.get("current")
+        cur_html = ""
+        if cur:
+            exp = f" из ~{cur['expected']}" if cur.get("expected") else ""
+            cur_html = (f"<div class=muted style='margin-top:6px'>сейчас: «{esc(cur['title'] or cur['chat_id'])}» — "
+                        f"собрано <b style='color:var(--text)'>{cur['collected']}</b>{exp} участников "
+                        f"(стр. {cur['pages']})</div>")
         rc_body = (
             f"<b>↻ Перепроверка идёт…</b> <span class=muted>стадия: {stage} · "
             f"каналов прочитано {ch_done}/{len(_recheck['channels']) or '…'} · "
-            f"юзеров сверено {_recheck['done']}/{_recheck['total']}</span>"
+            f"юзеров сверено {_recheck['done']}/{_recheck['total']}</span>{cur_html}"
             "<form method=post action='/stats/recheck/stop' style='margin-top:10px'>"
             "<button class='btn danger sm'>⛔ Остановить</button></form>"
         )
